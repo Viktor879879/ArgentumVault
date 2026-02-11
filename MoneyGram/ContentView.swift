@@ -69,7 +69,8 @@ struct ContentView: View {
 struct SplashView: View {
     var body: some View {
         ZStack {
-            Color(.systemBackground)
+            // Keep splash background stable in dark mode to avoid black frame around a light logo asset.
+            Color(hex: "ECECECFF")
                 .ignoresSafeArea()
             Image("LaunchLogo")
                 .resizable()
