@@ -16,6 +16,7 @@ struct MoneyGramApp: App {
             Transaction.self,
             Asset.self,
             Wallet.self,
+            WalletFolder.self,
         ])
         let modelConfiguration = ModelConfiguration(
             schema: schema,

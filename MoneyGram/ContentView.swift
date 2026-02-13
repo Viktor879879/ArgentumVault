@@ -21,9 +21,23 @@ typealias PlatformImage = NSImage
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @AppStorage("appTheme") private var appTheme = "system"
     @AppStorage("didRunMigration_v1") private var didRunMigration = false
     @StateObject private var rateService = RateService()
     @State private var showSplash = true
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+    
+    private var interactiveTint: Color {
+        .secondary
+    }
     
     var body: some View {
         ZStack {
@@ -33,12 +47,17 @@ struct ContentView: View {
                 TabView {
                     HomeView(rateService: rateService)
                         .tabItem {
-                            Label("Home", systemImage: "house.fill")
+                            Label(L10n.text("tab.home", lang: uiLanguageCode), systemImage: "house.fill")
                         }
                     
                     AnalyticsView(rateService: rateService)
                         .tabItem {
-                            Label("Analytics", systemImage: "chart.pie.fill")
+                            Label(L10n.text("tab.analytics", lang: uiLanguageCode), systemImage: "chart.pie.fill")
+                        }
+                    
+                    SettingsView()
+                        .tabItem {
+                            Label(L10n.text("tab.settings", lang: uiLanguageCode), systemImage: "gearshape.fill")
                         }
                 }
             }
@@ -49,6 +68,8 @@ struct ContentView: View {
                     .zIndex(1)
             }
         }
+        .dismissKeyboardOnTap()
+        .tint(interactiveTint)
         .task {
             Migration.runIfNeeded(
                 modelContext: modelContext,
@@ -63,6 +84,15 @@ struct ContentView: View {
                 }
             }
         }
+        .environment(\.locale, currentLocale)
+        .preferredColorScheme(AppTheme.colorScheme(from: appTheme))
+    }
+    
+    private var currentLocale: Locale {
+        if appLanguageCode == "system" {
+            return .autoupdatingCurrent
+        }
+        return Locale(identifier: appLanguageCode)
     }
 }
 
@@ -82,13 +112,14 @@ struct SplashView: View {
 
 struct BaseCurrencySetupView: View {
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @State private var selection = CurrencyCatalog.baseCurrencies.first?.code ?? "USD"
     
     var body: some View {
         NavigationStack {
             Form {
-                Section("Base Currency") {
-                    Picker("Currency", selection: $selection) {
+                Section(L10n.text("settings.base_currency", lang: uiLanguageCode)) {
+                    Picker(L10n.text("settings.currency", lang: uiLanguageCode), selection: $selection) {
                         ForEach(CurrencyCatalog.baseCurrencies, id: \.code) { currency in
                             Text("\(currency.code) — \(currency.name)")
                                 .tag(currency.code)
@@ -97,44 +128,56 @@ struct BaseCurrencySetupView: View {
                 }
                 
                 Section {
-                    Button("Continue") {
+                    Button(L10n.text("setup.continue", lang: uiLanguageCode)) {
                         baseCurrencyCode = selection
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
-            .navigationTitle("Welcome")
+            .navigationTitle(L10n.text("setup.welcome", lang: uiLanguageCode))
         }
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
     }
 }
 
 struct HomeView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("totalCurrencies") private var totalCurrenciesStorage = ""
     @AppStorage("isNumbersHidden") private var isNumbersHidden = false
+    @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
     
     @ObservedObject var rateService: RateService
     
-    @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
     @Query(sort: \Wallet.name) private var wallets: [Wallet]
+    @Query(sort: \WalletFolder.name) private var walletFolders: [WalletFolder]
     
-    @State private var selectedType: CategoryType = .expense
-    @State private var isAddingCategory = false
     @State private var isAddingTransaction = false
-    @State private var isEditingCategory = false
-    @State private var isEditingTransaction = false
-    @State private var editingCategory: Category?
     @State private var editingTransaction: Transaction?
     @State private var isAddingWallet = false
-    @State private var isEditingWallet = false
+    @State private var isAddingWalletFolder = false
+    @State private var editingWalletFolder: WalletFolder?
     @State private var editingWallet: Wallet?
     @State private var viewingWallet: Wallet?
     @State private var isManagingTotals = false
+    @State private var walletToDeleteName: String?
+    @State private var walletToDeleteAssetCode: String?
+    @State private var showDeleteWalletConfirm = false
+    @State private var collapsedFolderIDs: Set<PersistentIdentifier> = []
+    @State private var knownFolderIDs: Set<PersistentIdentifier> = []
+    @State private var didInitializeFolderCollapse = false
     
-    private var filteredCategories: [Category] {
-        categories.filter { $0.type == selectedType }
+    private var ungroupedWallets: [Wallet] {
+        wallets.filter { $0.folder == nil }
     }
     
     private var totalCurrencies: [String] {
@@ -148,9 +191,8 @@ struct HomeView: View {
                 unique.append(code)
             }
         }
-        if !unique.contains(baseCurrencyCode) {
-            unique.insert(baseCurrencyCode, at: 0)
-        }
+        unique.removeAll { $0 == baseCurrencyCode }
+        unique.insert(baseCurrencyCode, at: 0)
         if unique.isEmpty {
             return [baseCurrencyCode]
         }
@@ -162,80 +204,86 @@ struct HomeView: View {
             List {
                 Section {
                     TotalsHeader(
+                        lang: uiLanguageCode,
                         totalCurrencies: totalCurrencies,
                         baseCurrencyCode: baseCurrencyCode,
                         wallets: wallets,
                         rateService: rateService,
                         addAction: { isManagingTotals = true },
-                        isNumbersHidden: isNumbersHidden
+                        isNumbersHidden: isNumbersHidden,
+                        isRoundedAmounts: isRoundedAmounts
                     )
                 }
                 
                 Section {
-                    WalletsHeader(addAction: { isAddingWallet = true })
-                }
-                
-                Section("Wallets") {
+                    WalletsHeader(
+                        lang: uiLanguageCode,
+                        addAction: {
+                            isAddingWalletFolder = false
+                            isAddingWallet = true
+                        },
+                        addFolderAction: {
+                            isAddingWallet = false
+                            isAddingWalletFolder = true
+                        }
+                    )
+                    
                     if wallets.isEmpty {
-                        Text("No wallets yet.")
+                        Text(L10n.text("home.no_wallets", lang: uiLanguageCode))
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(wallets, id: \.persistentModelID) { wallet in
-                            WalletRow(wallet: wallet)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    viewingWallet = wallet
+                        ForEach(walletFolders, id: \.persistentModelID) { folder in
+                            let folderWallets = wallets.filter { $0.folder?.persistentModelID == folder.persistentModelID }
+                            if !folderWallets.isEmpty {
+                                let isExpanded = !collapsedFolderIDs.contains(folder.persistentModelID)
+                                HStack {
+                                    Button {
+                                        toggleFolder(folder)
+                                    } label: {
+                                        HStack {
+                                            Text(folder.name)
+                                            Spacer()
+                                            Text("\(folderWallets.count)")
+                                                .foregroundStyle(.secondary)
+                                            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button("Delete", role: .destructive) {
-                                        modelContext.delete(wallet)
+                                    Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
+                                        deleteWalletFolder(folder)
                                     }
-                                    Button("Edit") {
-                                        editingWallet = wallet
-                                        isEditingWallet = true
+                                    Button(L10n.text("common.edit", lang: uiLanguageCode)) {
+                                        editingWalletFolder = folder
                                     }
                                 }
+                                
+                                if isExpanded {
+                                    ForEach(folderWallets, id: \.persistentModelID) { wallet in
+                                        walletRowItem(wallet)
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if !ungroupedWallets.isEmpty {
+                            if !walletFolders.isEmpty {
+                                Text(L10n.text("home.ungrouped", lang: uiLanguageCode))
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(ungroupedWallets, id: \.persistentModelID) { wallet in
+                                walletRowItem(wallet)
+                            }
                         }
                     }
                 }
                 
-                Section {
-                    Picker("Type", selection: $selectedType) {
-                        ForEach(CategoryType.allCases, id: \.self) { type in
-                            Text(type == .expense ? "Expenses" : "Income").tag(type)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                
-                Section("Categories") {
-                    if filteredCategories.isEmpty {
-                        Text("No categories yet.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(filteredCategories, id: \.persistentModelID) { category in
-                            CategoryRow(category: category)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    editingCategory = category
-                                    isEditingCategory = true
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button("Delete", role: .destructive) {
-                                        modelContext.delete(category)
-                                    }
-                                    Button("Edit") {
-                                        editingCategory = category
-                                        isEditingCategory = true
-                                    }
-                                }
-                        }
-                    }
-                }
-                
-                Section("Transactions") {
+                Section(L10n.text("home.transaction_history", lang: uiLanguageCode)) {
                     if transactions.isEmpty {
-                        Text("No transactions yet.")
+                        Text(L10n.text("home.no_transactions", lang: uiLanguageCode))
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(transactions, id: \.persistentModelID) { transaction in
@@ -243,22 +291,29 @@ struct HomeView: View {
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     editingTransaction = transaction
-                                    isEditingTransaction = true
                                 }
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button("Delete", role: .destructive) {
+                                    Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
                                         deleteTransaction(transaction)
                                     }
-                                    Button("Edit") {
+                                    Button(L10n.text("common.edit", lang: uiLanguageCode)) {
                                         editingTransaction = transaction
-                                        isEditingTransaction = true
                                     }
                                 }
                         }
                     }
                 }
             }
-            .navigationTitle("MoneyGram")
+            .navigationTitle(L10n.text("app.name", lang: uiLanguageCode))
+            .onAppear {
+                initializeFolderCollapseIfNeeded()
+            }
+            .onChange(of: walletFolders.count) {
+                syncFolderCollapseState()
+            }
+            .onChange(of: baseCurrencyCode) {
+                Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: wallets, force: true) }
+            }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -266,7 +321,7 @@ struct HomeView: View {
                     } label: {
                         Image(systemName: isNumbersHidden ? "eye.slash" : "eye")
                     }
-                    .accessibilityLabel("Toggle privacy")
+                    .accessibilityLabel(L10n.text("a11y.toggle_privacy", lang: uiLanguageCode))
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -274,7 +329,7 @@ struct HomeView: View {
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .accessibilityLabel("Refresh rates")
+                    .accessibilityLabel(L10n.text("a11y.refresh_rates", lang: uiLanguageCode))
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -282,33 +337,21 @@ struct HomeView: View {
                     } label: {
                         Image(systemName: "plus.circle.fill")
                     }
-                    .accessibilityLabel("Add transaction")
-                }
-                
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        isAddingCategory = true
-                    } label: {
-                        Image(systemName: "square.grid.2x2.fill")
-                    }
-                    .accessibilityLabel("Add category")
+                    .accessibilityLabel(L10n.text("a11y.add_transaction", lang: uiLanguageCode))
                 }
             }
             .task {
                 await rateService.refreshAllRates(base: baseCurrencyCode, wallets: wallets, force: false)
             }
-            .sheet(isPresented: $isAddingCategory) {
-                AddCategoryView()
-            }
             .sheet(isPresented: $isAddingTransaction) {
                 AddTransactionView(defaultCurrencyCode: baseCurrencyCode)
             }
-            .sheet(isPresented: $isEditingCategory) {
-                if let editingCategory {
-                    AddCategoryView(category: editingCategory)
-                }
-            }
-            .sheet(isPresented: $isEditingTransaction) {
+            .sheet(
+                isPresented: Binding(
+                    get: { editingTransaction != nil },
+                    set: { if !$0 { editingTransaction = nil } }
+                )
+            ) {
                 if let editingTransaction {
                     AddTransactionView(
                         transaction: editingTransaction,
@@ -319,7 +362,25 @@ struct HomeView: View {
             .sheet(isPresented: $isAddingWallet) {
                 AddWalletView(defaultCurrencyCode: baseCurrencyCode)
             }
-            .sheet(isPresented: $isEditingWallet) {
+            .sheet(isPresented: $isAddingWalletFolder) {
+                AddWalletFolderView()
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { editingWalletFolder != nil },
+                    set: { if !$0 { editingWalletFolder = nil } }
+                )
+            ) {
+                if let editingWalletFolder {
+                    AddWalletFolderView(folder: editingWalletFolder)
+                }
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { editingWallet != nil },
+                    set: { if !$0 { editingWallet = nil } }
+                )
+            ) {
                 if let editingWallet {
                     AddWalletView(wallet: editingWallet, defaultCurrencyCode: baseCurrencyCode)
                 }
@@ -335,11 +396,35 @@ struct HomeView: View {
                     totalCurrenciesStorage = newCodes.joined(separator: ",")
                 }
             }
+            .alert(
+                L10n.text("home.delete_wallet_title", lang: uiLanguageCode),
+                isPresented: $showDeleteWalletConfirm
+            ) {
+                Button(L10n.text("common.cancel", lang: uiLanguageCode), role: .cancel) {}
+                Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
+                    guard let walletName = walletToDeleteName,
+                          let assetCode = walletToDeleteAssetCode,
+                          let wallet = wallets.first(where: { $0.name == walletName && $0.assetCode == assetCode }) else {
+                        walletToDeleteName = nil
+                        walletToDeleteAssetCode = nil
+                        return
+                    }
+                    for transaction in transactions where transaction.wallet?.persistentModelID == wallet.persistentModelID || (transaction.walletNameSnapshot == wallet.name && transaction.currencyCode == wallet.assetCode) {
+                        transaction.wallet = nil
+                    }
+                    modelContext.delete(wallet)
+                    walletToDeleteName = nil
+                    walletToDeleteAssetCode = nil
+                }
+            } message: {
+                Text(L10n.text("home.delete_wallet_message", lang: uiLanguageCode))
+            }
         }
     }
     
     private func deleteTransaction(_ transaction: Transaction) {
-        if let wallet = transaction.wallet {
+        if let walletName = transaction.walletNameSnapshot,
+           let wallet = wallets.first(where: { $0.name == walletName && $0.assetCode == transaction.currencyCode }) {
             var delta = transaction.amount
             if (transaction.type ?? .expense) == .expense {
                 delta = -delta
@@ -348,30 +433,95 @@ struct HomeView: View {
         }
         modelContext.delete(transaction)
     }
+    
+    private func deleteWalletFolder(_ folder: WalletFolder) {
+        for wallet in wallets where wallet.folder?.persistentModelID == folder.persistentModelID {
+            wallet.folder = nil
+        }
+        collapsedFolderIDs.remove(folder.persistentModelID)
+        modelContext.delete(folder)
+    }
+    
+    private func toggleFolder(_ folder: WalletFolder) {
+        if collapsedFolderIDs.contains(folder.persistentModelID) {
+            collapsedFolderIDs.remove(folder.persistentModelID)
+        } else {
+            collapsedFolderIDs.insert(folder.persistentModelID)
+        }
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+    
+    private func initializeFolderCollapseIfNeeded() {
+        guard !didInitializeFolderCollapse else { return }
+        let ids = Set(walletFolders.map(\.persistentModelID))
+        collapsedFolderIDs = ids
+        knownFolderIDs = ids
+        didInitializeFolderCollapse = true
+    }
+    
+    private func syncFolderCollapseState() {
+        let currentIDs = Set(walletFolders.map(\.persistentModelID))
+        let newIDs = currentIDs.subtracting(knownFolderIDs)
+        if !newIDs.isEmpty {
+            collapsedFolderIDs.formUnion(newIDs)
+        }
+        collapsedFolderIDs = collapsedFolderIDs.intersection(currentIDs)
+        knownFolderIDs = currentIDs
+    }
+    
+    @ViewBuilder
+    private func walletRowItem(_ wallet: Wallet) -> some View {
+        WalletRow(wallet: wallet)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                viewingWallet = wallet
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
+                    walletToDeleteName = wallet.name
+                    walletToDeleteAssetCode = wallet.assetCode
+                    showDeleteWalletConfirm = true
+                }
+                Button(L10n.text("common.edit", lang: uiLanguageCode)) {
+                    editingWallet = wallet
+                }
+            }
+    }
 }
 
 struct TotalsHeader: View {
+    let lang: String
     let totalCurrencies: [String]
     let baseCurrencyCode: String
     let wallets: [Wallet]
     let rateService: RateService
     let addAction: () -> Void
     let isNumbersHidden: Bool
+    let isRoundedAmounts: Bool
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Total")
+                Text(L10n.text("home.total", lang: lang))
                     .font(.headline)
                 Spacer()
                 Button(action: addAction) {
                     Image(systemName: "plus.circle")
+                        .frame(width: 30, height: 30)
                 }
-                .accessibilityLabel("Add total currency")
+                .buttonStyle(.borderless)
+                .accessibilityLabel(L10n.text("a11y.add_total_currency", lang: lang))
             }
             
             if wallets.isEmpty {
-                Text("Add wallets to see totals.")
+                Text(L10n.text("home.add_wallets_for_total", lang: lang))
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(totalCurrencies, id: \.self) { code in
@@ -393,7 +543,7 @@ struct TotalsHeader: View {
         if isNumbersHidden {
             return "*** \(target)"
         }
-        let formatted = DecimalFormatter.string(from: total)
+        let formatted = DecimalFormatter.string(from: total, maximumFractionDigits: isRoundedAmounts ? 0 : 2)
         return "\(formatted) \(target)"
     }
     
@@ -415,17 +565,29 @@ struct TotalsHeader: View {
 }
 
 struct WalletsHeader: View {
+    let lang: String
     let addAction: () -> Void
+    let addFolderAction: () -> Void
     
     var body: some View {
         HStack {
-            Text("Wallets")
+            Text(L10n.text("home.wallets", lang: lang))
                 .font(.headline)
             Spacer()
-            Button(action: addAction) {
-                Image(systemName: "plus.circle")
+            HStack(spacing: 16) {
+                Button(action: addFolderAction) {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(L10n.text("a11y.add_folder", lang: lang))
+                
+                Button(action: addAction) {
+                    Image(systemName: "plus.circle")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(L10n.text("a11y.add_wallet", lang: lang))
             }
-            .accessibilityLabel("Add wallet")
+            .padding(.trailing, 2)
         }
     }
 }
@@ -433,13 +595,15 @@ struct WalletsHeader: View {
 struct WalletRow: View {
     let wallet: Wallet
     @AppStorage("isNumbersHidden") private var isNumbersHidden = false
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
     
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(wallet.name)
                     .font(.headline)
-                Text(wallet.kindLabel)
+                Text(kindLabel)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -449,22 +613,28 @@ struct WalletRow: View {
                     Text("*** \(wallet.assetCode)")
                         .font(.headline)
                 } else {
-                    Text("\(DecimalFormatter.string(from: wallet.balance)) \(wallet.assetCode)")
+                    Text("\(DecimalFormatter.string(from: wallet.balance, maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(wallet.assetCode)")
                         .font(.headline)
                 }
             }
         }
     }
-}
-
-extension Wallet {
-    var kindLabel: String {
-        switch kind {
-        case .fiat: return "Fiat"
-        case .crypto: return "Crypto"
-        case .metal: return "Metal"
-        case .stock: return "Stock"
+    
+    private var kindLabel: String {
+        switch wallet.kind {
+        case .fiat: return L10n.text("wallet.kind.fiat", lang: uiLanguageCode)
+        case .crypto: return L10n.text("wallet.kind.crypto", lang: uiLanguageCode)
+        case .metal: return L10n.text("wallet.kind.metal", lang: uiLanguageCode)
+        case .stock: return L10n.text("wallet.kind.stock", lang: uiLanguageCode)
         }
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
     }
 }
 
@@ -482,8 +652,23 @@ struct CategoryRow: View {
     }
 }
 
+enum AnalyticsMode: String, CaseIterable {
+    case expense
+    case net
+    case income
+    
+    func title(lang: String) -> String {
+        switch self {
+        case .expense: return L10n.text("common.expenses", lang: lang)
+        case .net: return L10n.text("analytics.net", lang: lang)
+        case .income: return L10n.text("common.income", lang: lang)
+        }
+    }
+}
+
 struct AnalyticsView: View {
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("isNumbersHidden") private var isNumbersHidden = false
     @ObservedObject var rateService: RateService
     
@@ -491,85 +676,113 @@ struct AnalyticsView: View {
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
     @Query(sort: \Wallet.name) private var analyticsWallets: [Wallet]
     
-    @State private var selectedType: CategoryType = .expense
+    @State private var selectedMode: AnalyticsMode = .net
     @State private var selectedRange: AnalyticsRange = .month
     @State private var rangeAnchor: Date = Date()
     @State private var selectedWalletID: PersistentIdentifier?
-    @State private var exportURL: URL?
     
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    Picker("Type", selection: $selectedType) {
-                        ForEach(CategoryType.allCases, id: \.self) { type in
-                            Text(type == .expense ? "Expenses" : "Income").tag(type)
+                    Picker(L10n.text("analytics.mode", lang: uiLanguageCode), selection: $selectedMode) {
+                        ForEach(AnalyticsMode.allCases, id: \.self) { mode in
+                            Text(mode.title(lang: uiLanguageCode)).tag(mode)
                         }
                     }
                     .pickerStyle(.segmented)
                 }
                 
                 Section {
-                    Picker("Range", selection: $selectedRange) {
+                    Picker(L10n.text("analytics.range", lang: uiLanguageCode), selection: $selectedRange) {
                         ForEach(AnalyticsRange.allCases, id: \.self) { range in
-                            Text(range.title).tag(range)
+                            Text(range.title(lang: uiLanguageCode)).tag(range)
                         }
                     }
                     .pickerStyle(.segmented)
                 }
                 
                 Section {
-                    Picker("Wallet", selection: $selectedWalletID) {
-                        Text("All Wallets").tag(PersistentIdentifier?.none)
-                        ForEach(analyticsWallets, id: \.persistentModelID) { wallet in
-                            Text(wallet.name).tag(Optional(wallet.persistentModelID))
+                    HStack {
+                        Spacer()
+                        Menu {
+                            Button(L10n.text("analytics.all_wallets", lang: uiLanguageCode)) {
+                                selectedWalletID = nil
+                            }
+                            ForEach(analyticsWallets, id: \.persistentModelID) { wallet in
+                                Button(wallet.name) {
+                                    selectedWalletID = wallet.persistentModelID
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(selectedWalletTitle)
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(.secondary)
                         }
+                        .buttonStyle(.plain)
+                        .tint(.secondary)
+                        Spacer()
                     }
                     
                     HStack {
                         Button {
-                            shiftRange(by: -1)
+                            shiftToPast()
                         } label: {
                             Image(systemName: "chevron.left")
+                                .font(.title3.weight(.semibold))
+                                .frame(width: 32, height: 32)
                         }
+                        .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
+                        .disabled(!canMoveBackward)
                         
                         Spacer()
                         Text(rangeLabel)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
                         Spacer()
                         
                         Button {
-                            shiftRange(by: 1)
+                            shiftToPresent()
                         } label: {
                             Image(systemName: "chevron.right")
+                                .font(.title3.weight(.semibold))
+                                .frame(width: 32, height: 32)
                         }
+                        .buttonStyle(.borderless)
+                        .contentShape(Rectangle())
                         .disabled(!canMoveForward)
                     }
                 }
                 
-                Section("Summary") {
-                    if totals.isEmpty {
-                        Text("No data for this period.")
+                Section(L10n.text("analytics.summary", lang: uiLanguageCode)) {
+                    SummaryComparisonView(
+                        lang: uiLanguageCode,
+                        currentTotal: currentTotal,
+                        previousTotal: previousTotal,
+                        currency: baseCurrencyCode,
+                        isNumbersHidden: isNumbersHidden,
+                        mode: selectedMode
+                    )
+                    
+                    if categoryTotals.isEmpty {
+                        Text(L10n.text("analytics.no_data", lang: uiLanguageCode))
                             .foregroundStyle(.secondary)
                     } else {
-                        SummaryComparisonView(
-                            currentTotal: currentTotal,
-                            previousTotal: previousTotal,
-                            currency: baseCurrencyCode,
-                            isNumbersHidden: isNumbersHidden
-                        )
-                        
-                        Chart(totals) { item in
+                        Chart(categoryTotals) { item in
                             SectorMark(
-                                angle: .value("Amount", item.amount),
+                                angle: .value("Amount", abs(NSDecimalNumber(decimal: item.amount).doubleValue)),
                                 innerRadius: .ratio(0.6)
                             )
                             .foregroundStyle(item.color)
                         }
                         .frame(height: 260)
                         
-                        ForEach(totals) { item in
+                        ForEach(categoryTotals) { item in
                             HStack(spacing: 12) {
                                 Circle()
                                     .fill(item.color)
@@ -582,6 +795,7 @@ struct AnalyticsView: View {
                                 } else {
                                     Text(item.formattedAmount)
                                         .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(item.amount < 0 ? .red : .green)
                                     Text(item.formattedPercent)
                                         .foregroundStyle(.secondary)
                                 }
@@ -590,7 +804,7 @@ struct AnalyticsView: View {
                     }
                 }
             }
-            .navigationTitle("Analytics")
+            .navigationTitle(L10n.text("tab.analytics", lang: uiLanguageCode))
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -598,22 +812,7 @@ struct AnalyticsView: View {
                     } label: {
                         Image(systemName: isNumbersHidden ? "eye.slash" : "eye")
                     }
-                    .accessibilityLabel("Toggle privacy")
-                }
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    if let exportURL {
-                        ShareLink(item: exportURL) {
-                            Image(systemName: "square.and.arrow.up")
-                        }
-                        .accessibilityLabel("Export CSV")
-                    } else {
-                        Button {
-                            exportCSV()
-                        } label: {
-                            Image(systemName: "square.and.arrow.up")
-                        }
-                        .accessibilityLabel("Export CSV")
-                    }
+                    .accessibilityLabel(L10n.text("a11y.toggle_privacy", lang: uiLanguageCode))
                 }
             }
         }
@@ -623,113 +822,193 @@ struct AnalyticsView: View {
         .onChange(of: selectedRange) {
             rangeAnchor = Date()
         }
+        .onChange(of: baseCurrencyCode) {
+            Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: analyticsWallets, force: true) }
+        }
     }
     
-    private var totals: [CategoryTotal] {
+    private var categoryTotals: [CategoryTotal] {
         let dateRange = selectedRange.dateRange(anchor: rangeAnchor)
         let filtered = transactions.filter { transaction in
-            guard let category = transaction.category else { return false }
-            guard category.type == selectedType else { return false }
-            if let selectedWalletID,
-               transaction.wallet?.persistentModelID != selectedWalletID {
-                return false
+            guard let _ = transaction.category else { return false }
+            if let selectedWalletKey {
+                guard transaction.walletNameSnapshot == selectedWalletKey.name,
+                      transaction.currencyCode == selectedWalletKey.assetCode else {
+                    return false
+                }
             }
             return transaction.date >= dateRange.start && transaction.date <= dateRange.end
         }
         
         var sums: [PersistentIdentifier: Decimal] = [:]
+        var totalAbs = Decimal(0)
         for transaction in filtered {
             guard let category = transaction.category else { continue }
-            let amount = transaction.amount
-            let kind = transaction.wallet?.kind ?? .fiat
-            let converted = rateService.convert(
-                amount: amount,
-                from: transaction.currencyCode,
-                kind: kind,
-                to: baseCurrencyCode
-            ) ?? amount
-            sums[category.persistentModelID, default: 0] += converted
+            let amount = signedConvertedAmount(for: transaction)
+            if amount == 0 { continue }
+            sums[category.persistentModelID, default: 0] += amount
+            totalAbs += absDecimal(amount)
         }
         
-        let totalSum = sums.values.reduce(Decimal(0), +)
         return categories
-            .filter { $0.type == selectedType }
             .compactMap { category in
-                guard let amount = sums[category.persistentModelID], amount > 0 else { return nil }
+                guard let amount = sums[category.persistentModelID], amount != 0 else { return nil }
                 return CategoryTotal(
                     id: category.persistentModelID,
                     name: category.name,
                     amount: amount,
                     color: Color(hex: category.colorHex),
-                    total: totalSum,
+                    total: totalAbs,
                     currency: baseCurrencyCode
                 )
             }
-            .sorted { $0.amount > $1.amount }
+            .sorted { absDecimal($0.amount) > absDecimal($1.amount) }
+    }
+    
+    private var selectedWalletKey: (name: String, assetCode: String)? {
+        guard let selectedWalletID,
+              let wallet = analyticsWallets.first(where: { $0.persistentModelID == selectedWalletID }) else {
+            return nil
+        }
+        return (wallet.name, wallet.assetCode)
     }
     
     private var currentTotal: Decimal {
-        totals.reduce(Decimal(0)) { $0 + $1.amount }
+        let dateRange = selectedRange.dateRange(anchor: rangeAnchor)
+        return periodTotal(for: dateRange)
     }
     
     private var previousTotal: Decimal {
-        let previousAnchor = selectedRange.shift(anchor: rangeAnchor, by: -1)
-        let dateRange = selectedRange.dateRange(anchor: previousAnchor)
-        let filtered = transactions.filter { transaction in
-            guard let category = transaction.category else { return false }
-            guard category.type == selectedType else { return false }
-            if let selectedWalletID,
-               transaction.wallet?.persistentModelID != selectedWalletID {
-                return false
+        var candidateAnchor = selectedRange.shift(anchor: rangeAnchor, by: -1)
+        while selectedRange.dateRange(anchor: candidateAnchor).start >= minAnchorStart {
+            let dateRange = selectedRange.dateRange(anchor: candidateAnchor)
+            let total = periodTotal(for: dateRange)
+            if total != 0 {
+                return total
             }
-            return transaction.date >= dateRange.start && transaction.date <= dateRange.end
+            let next = selectedRange.shift(anchor: candidateAnchor, by: -1)
+            if next == candidateAnchor {
+                break
+            }
+            candidateAnchor = next
         }
-        
+        return 0
+    }
+    
+    private var rangeLabel: String {
+        selectedRange.label(anchor: rangeAnchor, lang: uiLanguageCode)
+    }
+    
+    private var selectedWalletTitle: String {
+        if let selectedWalletID,
+           let wallet = analyticsWallets.first(where: { $0.persistentModelID == selectedWalletID }) {
+            return wallet.name
+        }
+        return L10n.text("analytics.all_wallets", lang: uiLanguageCode)
+    }
+    
+    private var canMoveBackward: Bool {
+        currentAnchorStart > minAnchorStart
+    }
+    
+    private var canMoveForward: Bool {
+        currentAnchorStart < maxAnchorStart
+    }
+    
+    private func shiftToPast() {
+        shiftRange(by: -1)
+    }
+    
+    private func shiftToPresent() {
+        shiftRange(by: 1)
+    }
+    
+    private func shiftRange(by value: Int) {
+        let moved = selectedRange.shift(anchor: rangeAnchor, by: value)
+        let movedStart = selectedRange.dateRange(anchor: moved).start
+        if movedStart <= minAnchorStart {
+            rangeAnchor = minAnchorStart
+        } else if movedStart >= maxAnchorStart {
+            rangeAnchor = maxAnchorStart
+        } else {
+            rangeAnchor = moved
+        }
+    }
+    
+    private func periodTotal(for dateRange: (start: Date, end: Date)) -> Decimal {
         var total = Decimal(0)
-        for transaction in filtered {
-            let amount = transaction.amount
-            let kind = transaction.wallet?.kind ?? .fiat
-            let converted = rateService.convert(
-                amount: amount,
-                from: transaction.currencyCode,
-                kind: kind,
-                to: baseCurrencyCode
-            ) ?? amount
-            total += converted
+        for transaction in transactions {
+            guard transaction.date >= dateRange.start && transaction.date <= dateRange.end else { continue }
+            if let selectedWalletKey {
+                guard transaction.walletNameSnapshot == selectedWalletKey.name,
+                      transaction.currencyCode == selectedWalletKey.assetCode else {
+                    continue
+                }
+            }
+            total += signedConvertedAmount(for: transaction)
         }
         return total
     }
     
-    private var rangeLabel: String {
-        selectedRange.label(anchor: rangeAnchor)
-    }
-    
-    private var canMoveForward: Bool {
-        let range = selectedRange.dateRange(anchor: rangeAnchor)
-        return range.end < Date()
-    }
-    
-    private func shiftRange(by value: Int) {
-        rangeAnchor = selectedRange.shift(anchor: rangeAnchor, by: value)
-    }
-    
-    private func exportCSV() {
-        let csv = CSVExporter.transactionsCSV(filteredTransactionsForExport())
-        let filename = "moneygram-transactions-\(DateFormatterCache.export.string(from: Date())).csv"
-        exportURL = try? CSVExporter.writeCSVToDocuments(csv, filename: filename)
-    }
-    
-    private func filteredTransactionsForExport() -> [Transaction] {
-        let dateRange = selectedRange.dateRange(anchor: rangeAnchor)
-        return transactions.filter { transaction in
-            guard let category = transaction.category else { return false }
-            guard category.type == selectedType else { return false }
-            if let selectedWalletID,
-               transaction.wallet?.persistentModelID != selectedWalletID {
-                return false
-            }
-            return transaction.date >= dateRange.start && transaction.date <= dateRange.end
+    private func signedConvertedAmount(for transaction: Transaction) -> Decimal {
+        guard let category = transaction.category else { return 0 }
+        let type = transaction.type ?? (category.type == .income ? .income : .expense)
+        let converted = rateService.convert(
+            amount: transaction.amount,
+            from: transaction.currencyCode,
+            kind: kindForTransaction(transaction),
+            to: baseCurrencyCode
+        ) ?? transaction.amount
+        
+        switch selectedMode {
+        case .income:
+            return type == .income ? absDecimal(converted) : 0
+        case .expense:
+            return type == .expense ? -absDecimal(converted) : 0
+        case .net:
+            return type == .income ? absDecimal(converted) : -absDecimal(converted)
         }
+    }
+    
+    private func kindForTransaction(_ transaction: Transaction) -> AssetKind {
+        if let raw = transaction.walletKindRaw,
+           let kind = AssetKind(rawValue: raw) {
+            return kind
+        }
+        if CurrencyCatalog.allCurrencies.contains(where: { $0.code == transaction.currencyCode && $0.kind == .crypto }) {
+            return .crypto
+        }
+        if CurrencyCatalog.allCurrencies.contains(where: { $0.code == transaction.currencyCode && $0.kind == .metal }) {
+            return .metal
+        }
+        if CurrencyCatalog.allCurrencies.contains(where: { $0.code == transaction.currencyCode && $0.kind == .fiat }) {
+            return .fiat
+        }
+        return .stock
+    }
+    
+    private func absDecimal(_ value: Decimal) -> Decimal {
+        value < 0 ? -value : value
+    }
+    
+    private var currentAnchorStart: Date {
+        selectedRange.dateRange(anchor: rangeAnchor).start
+    }
+    
+    private var maxAnchorStart: Date {
+        selectedRange.dateRange(anchor: Date()).start
+    }
+    
+    private var minAnchorStart: Date {
+        Calendar.current.date(from: DateComponents(year: 2000, month: 1, day: 1)) ?? Date.distantPast
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
     }
 }
 
@@ -739,12 +1018,12 @@ enum AnalyticsRange: CaseIterable {
     case month
     case year
     
-    var title: String {
+    func title(lang: String) -> String {
         switch self {
-        case .day: return "Day"
-        case .week: return "Week"
-        case .month: return "Month"
-        case .year: return "Year"
+        case .day: return L10n.text("analytics.day", lang: lang)
+        case .week: return L10n.text("analytics.week", lang: lang)
+        case .month: return L10n.text("analytics.month", lang: lang)
+        case .year: return L10n.text("analytics.year", lang: lang)
         }
     }
     
@@ -773,19 +1052,19 @@ enum AnalyticsRange: CaseIterable {
         }
     }
     
-    func label(anchor: Date) -> String {
+    func label(anchor: Date, lang: String) -> String {
         switch self {
         case .day:
-            return DateFormatterCache.day.string(from: anchor)
+            return DateFormatterCache.day(lang: lang).string(from: anchor)
         case .week:
             let range = dateRange(anchor: anchor)
-            let startDay = DateFormatterCache.dayShort.string(from: range.start)
-            let endDay = DateFormatterCache.dayShortYear.string(from: range.end)
+            let startDay = DateFormatterCache.dayShort(lang: lang).string(from: range.start)
+            let endDay = DateFormatterCache.dayShortYear(lang: lang).string(from: range.end)
             return "\(startDay) – \(endDay)"
         case .month:
-            return DateFormatterCache.monthYear.string(from: anchor)
+            return DateFormatterCache.monthYear(lang: lang).string(from: anchor)
         case .year:
-            return DateFormatterCache.year.string(from: anchor)
+            return DateFormatterCache.year(lang: lang).string(from: anchor)
         }
     }
     
@@ -819,8 +1098,12 @@ struct CategoryTotal: Identifiable {
     
     var formattedPercent: String {
         guard total > 0 else { return "0%" }
-        let percent = (amount as NSDecimalNumber).doubleValue / (total as NSDecimalNumber).doubleValue * 100
+        let percent = (absDecimal(amount) as NSDecimalNumber).doubleValue / (total as NSDecimalNumber).doubleValue * 100
         return String(format: "%.0f%%", percent)
+    }
+    
+    private func absDecimal(_ value: Decimal) -> Decimal {
+        value < 0 ? -value : value
     }
 }
 
@@ -832,10 +1115,17 @@ enum CategoryColorPalette {
 }
 
 enum DecimalFormatter {
-    static func string(from value: Decimal) -> String {
+    static func string(from value: Decimal, maximumFractionDigits: Int = 2) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
-        formatter.maximumFractionDigits = 2
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.groupingSeparator = ","
+        formatter.decimalSeparator = "."
+        formatter.usesGroupingSeparator = true
+        formatter.groupingSize = 3
+        formatter.secondaryGroupingSize = 3
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = maximumFractionDigits
         let number = NSDecimalNumber(decimal: value)
         return formatter.string(from: number) ?? "\(value)"
     }
@@ -843,6 +1133,8 @@ enum DecimalFormatter {
     static func editingString(from value: Decimal) -> String {
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.decimalSeparator = "."
         formatter.maximumFractionDigits = 6
         formatter.usesGroupingSeparator = false
         let number = NSDecimalNumber(decimal: value)
@@ -852,16 +1144,31 @@ enum DecimalFormatter {
     static func parse(_ text: String) -> Decimal? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return nil }
-        let locale = Locale.current
-        var cleaned = trimmed.replacingOccurrences(of: " ", with: "")
-        if let grouping = locale.groupingSeparator, !grouping.isEmpty {
-            cleaned = cleaned.replacingOccurrences(of: grouping, with: "")
+        
+        var cleaned = trimmed
+            .replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "\u{00A0}", with: "")
+            .replacingOccurrences(of: "_", with: "")
+        
+        let lastComma = cleaned.lastIndex(of: ",")
+        let lastDot = cleaned.lastIndex(of: ".")
+        
+        if let comma = lastComma, let dot = lastDot {
+            if comma > dot {
+                cleaned = cleaned.replacingOccurrences(of: ".", with: "")
+                cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
+            } else {
+                cleaned = cleaned.replacingOccurrences(of: ",", with: "")
+            }
+        } else if lastComma != nil {
+            cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
         }
-        if let decimal = locale.decimalSeparator, decimal != "." {
-            cleaned = cleaned.replacingOccurrences(of: decimal, with: ".")
-        }
+        
         let allowed = CharacterSet(charactersIn: "0123456789.")
         if cleaned.rangeOfCharacter(from: allowed.inverted) != nil {
+            return nil
+        }
+        if cleaned.filter({ $0 == "." }).count > 1 {
             return nil
         }
         return Decimal(string: cleaned)
@@ -869,35 +1176,47 @@ enum DecimalFormatter {
 }
 
 enum DateFormatterCache {
-    static let day: DateFormatter = {
+    static func locale(for lang: String) -> Locale {
+        if ["en", "ru", "uk", "sv"].contains(lang) {
+            return Locale(identifier: lang)
+        }
+        return .autoupdatingCurrent
+    }
+    
+    static func day(lang: String) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM yyyy"
+        formatter.locale = locale(for: lang)
         return formatter
-    }()
+    }
     
-    static let dayShort: DateFormatter = {
+    static func dayShort(lang: String) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM"
+        formatter.locale = locale(for: lang)
         return formatter
-    }()
+    }
     
-    static let dayShortYear: DateFormatter = {
+    static func dayShortYear(lang: String) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM yyyy"
+        formatter.locale = locale(for: lang)
         return formatter
-    }()
+    }
     
-    static let monthYear: DateFormatter = {
+    static func monthYear(lang: String) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.dateFormat = "LLLL yyyy"
+        formatter.locale = locale(for: lang)
         return formatter
-    }()
+    }
     
-    static let year: DateFormatter = {
+    static func year(lang: String) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy"
+        formatter.locale = locale(for: lang)
         return formatter
-    }()
+    }
     
     static let export: DateFormatter = {
         let formatter = DateFormatter()
@@ -907,33 +1226,41 @@ enum DateFormatterCache {
 }
 
 struct SummaryComparisonView: View {
+    let lang: String
     let currentTotal: Decimal
     let previousTotal: Decimal
     let currency: String
     let isNumbersHidden: Bool
+    let mode: AnalyticsMode
     
     var body: some View {
         let delta = currentTotal - previousTotal
-        let percent = previousTotal == 0 ? nil :
-            (NSDecimalNumber(decimal: delta).doubleValue / NSDecimalNumber(decimal: previousTotal).doubleValue * 100)
+        let percent: Double = {
+            if previousTotal == 0 {
+                return 0
+            }
+            return NSDecimalNumber(decimal: delta).doubleValue / NSDecimalNumber(decimal: previousTotal).doubleValue * 100
+        }()
         
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Current")
+                Text(L10n.text("analytics.current", lang: lang))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(displayAmount(currentTotal))
                     .font(.headline)
+                    .foregroundStyle(amountColor(currentTotal))
             }
             HStack {
-                Text("Previous")
+                Text(L10n.text("analytics.previous", lang: lang))
                     .foregroundStyle(.secondary)
                 Spacer()
                 Text(displayAmount(previousTotal))
                     .font(.subheadline)
+                    .foregroundStyle(amountColor(previousTotal))
             }
             HStack {
-                Text("Change")
+                Text(L10n.text("analytics.change", lang: lang))
                     .foregroundStyle(.secondary)
                 Spacer()
                 if isNumbersHidden {
@@ -950,17 +1277,32 @@ struct SummaryComparisonView: View {
     
     private func displayAmount(_ amount: Decimal) -> String {
         if isNumbersHidden { return "*** \(currency)" }
-        return "\(DecimalFormatter.string(from: amount)) \(currency)"
+        let sign = amount > 0 ? "+" : amount < 0 ? "-" : ""
+        return "\(sign)\(DecimalFormatter.string(from: absDecimal(amount))) \(currency)"
     }
     
-    private func changeLabel(delta: Decimal, percent: Double?) -> String {
+    private func changeLabel(delta: Decimal, percent: Double) -> String {
         let sign = delta >= 0 ? "+" : "-"
         let absDelta = delta >= 0 ? delta : -delta
         let deltaText = DecimalFormatter.string(from: absDelta)
-        if let percent {
-            return "\(sign)\(deltaText) \(currency) (\(String(format: "%.1f", abs(percent)))%)"
+        return "\(sign)\(deltaText) \(currency) (\(String(format: "%.1f", abs(percent)))%)"
+    }
+    
+    private func amountColor(_ value: Decimal) -> Color {
+        switch mode {
+        case .expense:
+            return .red
+        case .income:
+            return .green
+        case .net:
+            if value > 0 { return .green }
+            if value < 0 { return .red }
+            return .primary
         }
-        return "\(sign)\(deltaText) \(currency)"
+    }
+    
+    private func absDecimal(_ value: Decimal) -> Decimal {
+        value < 0 ? -value : value
     }
 }
 
@@ -969,6 +1311,7 @@ struct WalletDetailView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage("isNumbersHidden") private var isNumbersHidden = false
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     
     let wallet: Wallet
     @ObservedObject var rateService: RateService
@@ -977,7 +1320,7 @@ struct WalletDetailView: View {
     @State private var isAddingTransaction = false
     
     private var walletTransactions: [Transaction] {
-        transactions.filter { $0.wallet?.persistentModelID == wallet.persistentModelID }
+        transactions.filter { $0.walletNameSnapshot == wallet.name && $0.currencyCode == wallet.assetCode }
     }
     
     private var walletTotalInBase: Decimal? {
@@ -992,7 +1335,7 @@ struct WalletDetailView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Balance") {
+                Section(L10n.text("wallet.balance", lang: uiLanguageCode)) {
                     HStack {
                         Text(wallet.name)
                         Spacer()
@@ -1016,9 +1359,9 @@ struct WalletDetailView: View {
                     }
                 }
                 
-                Section("Transactions") {
+                Section(L10n.text("home.transaction_history", lang: uiLanguageCode)) {
                     if walletTransactions.isEmpty {
-                        Text("No transactions yet.")
+                        Text(L10n.text("home.no_transactions", lang: uiLanguageCode))
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(walletTransactions, id: \.persistentModelID) { transaction in
@@ -1030,7 +1373,7 @@ struct WalletDetailView: View {
             .navigationTitle(wallet.name)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
-                    Button("Close") { dismiss() }
+                    Button(L10n.text("common.close", lang: uiLanguageCode)) { dismiss() }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
@@ -1051,22 +1394,43 @@ struct WalletDetailView: View {
             }
         }
     }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
 }
 
 struct TransactionRow: View {
     let transaction: Transaction
     @AppStorage("isNumbersHidden") private var isNumbersHidden = false
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
+    
+    private var signedAmount: Decimal {
+        let inferredType: TransactionType = {
+            if let type = transaction.type { return type }
+            if transaction.category?.type == .income { return .income }
+            return .expense
+        }()
+        return inferredType == .income ? transaction.amount : -transaction.amount
+    }
     
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(transaction.category?.name ?? "Uncategorized")
+                Text(transaction.category?.name ?? L10n.text("transaction.untagged", lang: uiLanguageCode))
                     .font(.headline)
-                Text(transaction.note?.isEmpty == false ? transaction.note! : "No comment")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                if let wallet = transaction.wallet {
-                    Text(wallet.name)
+                if let note = transaction.note, !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(note)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                if let walletName = transaction.walletNameSnapshot, !walletName.isEmpty {
+                    Text(walletName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1077,32 +1441,61 @@ struct TransactionRow: View {
                     Text("*** \(transaction.currencyCode)")
                         .font(.headline)
                 } else {
-                    Text("\(DecimalFormatter.string(from: transaction.amount)) \(transaction.currencyCode)")
+                    let sign = signedAmount >= 0 ? "+" : "-"
+                    Text("\(sign)\(DecimalFormatter.string(from: absDecimal(signedAmount), maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)")
                         .font(.headline)
+                        .foregroundStyle(signedAmount >= 0 ? .green : .red)
                 }
-                Text(transaction.date, style: .date)
+                Text(formattedDate(transaction.date))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+    
+    private func absDecimal(_ value: Decimal) -> Decimal {
+        value < 0 ? -value : value
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+    
+    private func formattedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .long
+        formatter.timeStyle = .none
+        formatter.locale = DateFormatterCache.locale(for: uiLanguageCode)
+        return formatter.string(from: date)
     }
 }
 
 struct AddCategoryView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     
     private let category: Category?
     
     @State private var name: String
     @State private var type: CategoryType
     @State private var colorHex: String
+    @State private var isShowingColorPicker = false
+    @State private var customColor: Color
+    @State private var customHexInput: String
     
     init(category: Category? = nil) {
         self.category = category
         _name = State(initialValue: category?.name ?? "")
         _type = State(initialValue: category?.type ?? .expense)
         _colorHex = State(initialValue: category?.colorHex ?? "2F80EDFF")
+        let initialHex = category?.colorHex ?? "2F80EDFF"
+        _customColor = State(initialValue: Color(hex: initialHex))
+        _customHexInput = State(initialValue: "#\(String(initialHex.prefix(6)))")
     }
     
     private var isValid: Bool {
@@ -1112,21 +1505,21 @@ struct AddCategoryView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
-                    TextField("Category name", text: $name)
+                Section(L10n.text("common.name", lang: uiLanguageCode)) {
+                    TextField(L10n.text("tag.name_placeholder", lang: uiLanguageCode), text: $name)
                 }
                 
-                Section("Type") {
-                    Picker("Type", selection: $type) {
-                        Text("Expenses").tag(CategoryType.expense)
-                        Text("Income").tag(CategoryType.income)
+                Section(L10n.text("common.type", lang: uiLanguageCode)) {
+                    Picker(L10n.text("common.type", lang: uiLanguageCode), selection: $type) {
+                        Text(L10n.text("common.expenses", lang: uiLanguageCode)).tag(CategoryType.expense)
+                        Text(L10n.text("common.income", lang: uiLanguageCode)).tag(CategoryType.income)
                     }
                     .pickerStyle(.segmented)
                 }
                 
-                Section("Color") {
+                Section(L10n.text("common.color", lang: uiLanguageCode)) {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 12) {
-                        ForEach(CategoryColorPalette.all, id: \.self) { hex in
+                        ForEach(colorOptions, id: \.self) { hex in
                             Circle()
                                 .fill(Color(hex: hex))
                                 .frame(width: 26, height: 26)
@@ -1136,10 +1529,27 @@ struct AddCategoryView: View {
                                 )
                                 .onTapGesture { colorHex = hex }
                         }
+                        
+                        Circle()
+                            .fill(.clear)
+                            .strokeBorder(Color.secondary.opacity(0.7), lineWidth: 1.5)
+                            .frame(width: 26, height: 26)
+                            .overlay(
+                                Image(systemName: "plus")
+                                    .font(.footnote.weight(.bold))
+                                    .foregroundStyle(.secondary)
+                            )
+                            .onTapGesture {
+                                customColor = Color(hex: colorHex)
+                                customHexInput = "#\(String(colorHex.prefix(6)))"
+                                isShowingColorPicker = true
+                            }
                     }
                 }
             }
-            .navigationTitle(category == nil ? "New Category" : "Edit Category")
+            .navigationTitle(category == nil ? L10n.text("tag.new", lang: uiLanguageCode) : L10n.text("tag.edit", lang: uiLanguageCode))
+            .dismissKeyboardOnTap()
+            .keyboardDismissBehavior()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {
@@ -1147,7 +1557,7 @@ struct AddCategoryView: View {
                     } label: {
                         Image(systemName: "xmark")
                     }
-                    .accessibilityLabel("Cancel")
+                    .accessibilityLabel(L10n.text("common.cancel", lang: uiLanguageCode))
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
@@ -1159,7 +1569,74 @@ struct AddCategoryView: View {
                     .disabled(!isValid)
                 }
             }
+            .sheet(isPresented: $isShowingColorPicker) {
+                NavigationStack {
+                    Form {
+                        Section(L10n.text("tag.palette", lang: uiLanguageCode)) {
+                            ColorPicker(L10n.text("common.color", lang: uiLanguageCode), selection: $customColor, supportsOpacity: false)
+                                .onChange(of: customColor) {
+                                    let newHex = "#\(String(customColor.toHexString().prefix(6)))"
+                                    if customHexInput.uppercased() != newHex.uppercased() {
+                                        customHexInput = newHex
+                                    }
+                                }
+                            
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(customColor)
+                                    .frame(width: 30, height: 30)
+                                Text(displayHex(customHexInput))
+                                    .font(.subheadline.monospaced())
+                            }
+                        }
+                        
+                        Section("HEX") {
+                            TextField("#RRGGBB", text: $customHexInput)
+                                .textInputAutocapitalization(.characters)
+                                .autocorrectionDisabled()
+                                .onChange(of: customHexInput) {
+                                    guard let parsed = parseHex(customHexInput) else { return }
+                                    customColor = Color(hex: parsed)
+                                }
+                        }
+                    }
+                    .navigationTitle(L10n.text("tag.choose_color", lang: uiLanguageCode))
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button(L10n.text("common.cancel", lang: uiLanguageCode)) {
+                                isShowingColorPicker = false
+                            }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button(L10n.text("common.apply", lang: uiLanguageCode)) {
+                                if let parsed = parseHex(customHexInput) {
+                                    colorHex = parsed
+                                } else {
+                                    colorHex = customColor.toHexString()
+                                }
+                                isShowingColorPicker = false
+                            }
+                        }
+                    }
+                }
+            }
         }
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+    
+    private var colorOptions: [String] {
+        let base = Array(CategoryColorPalette.all.prefix(11))
+        if base.contains(colorHex) {
+            return base
+        }
+        return base + [colorHex]
     }
     
     private func saveCategory() {
@@ -1178,11 +1655,35 @@ struct AddCategoryView: View {
             modelContext.insert(newCategory)
         }
     }
+    
+    private func parseHex(_ value: String) -> String? {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+            .uppercased()
+        let valid = CharacterSet(charactersIn: "0123456789ABCDEF")
+        guard cleaned.rangeOfCharacter(from: valid.inverted) == nil else { return nil }
+        switch cleaned.count {
+        case 6:
+            return "\(cleaned)FF"
+        case 8:
+            return cleaned
+        default:
+            return nil
+        }
+    }
+    
+    private func displayHex(_ value: String) -> String {
+        if let parsed = parseHex(value) {
+            return "#\(String(parsed.prefix(6)))"
+        }
+        return value
+    }
 }
 
 struct AddTransactionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Wallet.name) private var wallets: [Wallet]
@@ -1236,55 +1737,57 @@ struct AddTransactionView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Type") {
-                    Picker("Type", selection: $transactionType) {
-                        Text("Expenses").tag(TransactionType.expense)
-                        Text("Income").tag(TransactionType.income)
+                Section(L10n.text("common.type", lang: uiLanguageCode)) {
+                    Picker(L10n.text("common.type", lang: uiLanguageCode), selection: $transactionType) {
+                        Text(L10n.text("common.expenses", lang: uiLanguageCode)).tag(TransactionType.expense)
+                        Text(L10n.text("common.income", lang: uiLanguageCode)).tag(TransactionType.income)
                     }
                     .pickerStyle(.segmented)
                 }
                 
-                Section("Wallet") {
-                    Picker("Wallet", selection: $selectedWalletID) {
-                        Text("Select wallet").tag(PersistentIdentifier?.none)
+                Section(L10n.text("home.wallets", lang: uiLanguageCode)) {
+                    Picker(L10n.text("home.wallets", lang: uiLanguageCode), selection: $selectedWalletID) {
+                        Text(L10n.text("transaction.select_wallet", lang: uiLanguageCode)).tag(PersistentIdentifier?.none)
                         ForEach(wallets, id: \.persistentModelID) { wallet in
                             Text(wallet.name)
                                 .tag(Optional(wallet.persistentModelID))
                         }
                     }
+                    .pickerStyle(.menu)
                 }
                 
-                Section("Amount") {
+                Section(L10n.text("common.amount", lang: uiLanguageCode)) {
                     TextField("0.00", text: $amountText)
                         .keyboardType(.decimalPad)
                 }
                 
-                Section("Currency") {
-                    Text(selectedWalletID == nil ? "Select wallet to set currency" : currencyCode)
+                Section(L10n.text("settings.currency", lang: uiLanguageCode)) {
+                    Text(selectedWalletID == nil ? L10n.text("transaction.select_wallet_for_currency", lang: uiLanguageCode) : currencyCode)
                         .foregroundStyle(.secondary)
                 }
                 
-                Section("Category") {
-                    Picker("Category", selection: $selectedCategoryID) {
-                        Text("Select category").tag(PersistentIdentifier?.none)
+                Section(L10n.text("settings.tags", lang: uiLanguageCode)) {
+                    Picker(L10n.text("settings.tags", lang: uiLanguageCode), selection: $selectedCategoryID) {
+                        Text(L10n.text("transaction.select_tag", lang: uiLanguageCode)).tag(PersistentIdentifier?.none)
                         ForEach(filteredCategories, id: \.persistentModelID) { category in
                             Text(category.name)
                                 .tag(Optional(category.persistentModelID))
                         }
                     }
+                    .pickerStyle(.menu)
                 }
                 
-                Section("Date") {
-                    DatePicker("Date", selection: $date, displayedComponents: [.date, .hourAndMinute])
+                Section(L10n.text("common.date", lang: uiLanguageCode)) {
+                    DatePicker(L10n.text("common.date", lang: uiLanguageCode), selection: $date, displayedComponents: [.date, .hourAndMinute])
                 }
                 
-                Section("Comment") {
-                    TextField("Add a comment", text: $note, axis: .vertical)
+                Section(L10n.text("common.comment", lang: uiLanguageCode)) {
+                    TextField(L10n.text("transaction.add_comment", lang: uiLanguageCode), text: $note, axis: .vertical)
                 }
                 
-                Section("Photo") {
+                Section(L10n.text("common.photo", lang: uiLanguageCode)) {
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
-                        Label("Select Photo", systemImage: "photo")
+                        Label(L10n.text("transaction.select_photo", lang: uiLanguageCode), systemImage: "photo")
                     }
                     if let photoData, let image = platformImage(from: photoData) {
                         platformImageView(image)
@@ -1294,13 +1797,14 @@ struct AddTransactionView: View {
                     }
                 }
             }
-            .navigationTitle(transaction == nil ? "New Transaction" : "Edit Transaction")
+            .navigationTitle(transaction == nil ? L10n.text("transaction.new", lang: uiLanguageCode) : L10n.text("transaction.edit", lang: uiLanguageCode))
+            .keyboardDismissBehavior()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L10n.text("common.cancel", lang: uiLanguageCode)) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button(L10n.text("common.save", lang: uiLanguageCode)) {
                         saveTransaction()
                         dismiss()
                     }
@@ -1326,12 +1830,22 @@ struct AddTransactionView: View {
         }
     }
     
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+    
     private func saveTransaction() {
         guard let amount = parsedAmount else { return }
         guard let selectedCategoryID else { return }
         guard let selectedWalletID else { return }
         let selectedCategory = categories.first { $0.persistentModelID == selectedCategoryID }
         let selectedWallet = wallets.first { $0.persistentModelID == selectedWalletID }
+        let walletNameSnapshot = selectedWallet?.name
+        let walletKindRaw = selectedWallet?.kind.rawValue
         
         applyWalletChanges(newWallet: selectedWallet, newAmount: amount, newType: transactionType)
         
@@ -1342,6 +1856,8 @@ struct AddTransactionView: View {
             transaction.note = note.isEmpty ? nil : note
             transaction.type = transactionType
             transaction.photoData = photoData
+            transaction.walletNameSnapshot = walletNameSnapshot
+            transaction.walletKindRaw = walletKindRaw
             transaction.category = selectedCategory
             transaction.wallet = selectedWallet
         } else {
@@ -1351,6 +1867,8 @@ struct AddTransactionView: View {
                 date: date,
                 note: note.isEmpty ? nil : note,
                 type: transactionType,
+                walletNameSnapshot: walletNameSnapshot,
+                walletKindRaw: walletKindRaw,
                 photoData: photoData,
                 category: selectedCategory,
                 wallet: selectedWallet
@@ -1449,6 +1967,8 @@ struct AddTransactionView: View {
 struct AddWalletView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @Query(sort: \WalletFolder.name) private var walletFolders: [WalletFolder]
     
     private let wallet: Wallet?
     private let defaultCurrencyCode: String
@@ -1457,6 +1977,7 @@ struct AddWalletView: View {
     @State private var kind: AssetKind
     @State private var assetCode: String
     @State private var balanceText: String
+    @State private var selectedFolderID: PersistentIdentifier?
     
     init(wallet: Wallet? = nil, defaultCurrencyCode: String) {
         self.wallet = wallet
@@ -1465,6 +1986,7 @@ struct AddWalletView: View {
         _kind = State(initialValue: wallet?.kind ?? .fiat)
         _assetCode = State(initialValue: wallet?.assetCode ?? defaultCurrencyCode)
         _balanceText = State(initialValue: wallet.map { DecimalFormatter.editingString(from: $0.balance) } ?? "")
+        _selectedFolderID = State(initialValue: wallet?.folder?.persistentModelID)
     }
     
     private var canSave: Bool {
@@ -1482,46 +2004,58 @@ struct AddWalletView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Name") {
-                    TextField("Wallet name", text: $name)
+                Section(L10n.text("common.name", lang: uiLanguageCode)) {
+                    TextField(L10n.text("wallet.name_placeholder", lang: uiLanguageCode), text: $name)
                 }
                 
-                Section("Type") {
-                    Picker("Type", selection: $kind) {
-                        Text("Fiat").tag(AssetKind.fiat)
-                        Text("Crypto").tag(AssetKind.crypto)
-                        Text("Metal").tag(AssetKind.metal)
-                        Text("Stock").tag(AssetKind.stock)
+                Section(L10n.text("common.type", lang: uiLanguageCode)) {
+                    Picker(L10n.text("common.type", lang: uiLanguageCode), selection: $kind) {
+                        Text(L10n.text("wallet.kind.fiat", lang: uiLanguageCode)).tag(AssetKind.fiat)
+                        Text(L10n.text("wallet.kind.crypto", lang: uiLanguageCode)).tag(AssetKind.crypto)
+                        Text(L10n.text("wallet.kind.metal", lang: uiLanguageCode)).tag(AssetKind.metal)
+                        Text(L10n.text("wallet.kind.stock", lang: uiLanguageCode)).tag(AssetKind.stock)
                     }
                     .pickerStyle(.segmented)
                 }
                 
-                Section("Asset") {
+                Section(L10n.text("wallet.asset", lang: uiLanguageCode)) {
                     if kind == .stock {
-                        TextField("Ticker (e.g. AAPL)", text: $assetCode)
+                        TextField(L10n.text("wallet.ticker_placeholder", lang: uiLanguageCode), text: $assetCode)
                             .textInputAutocapitalization(.characters)
                     } else {
-                        Picker("Asset", selection: $assetCode) {
+                        Picker(L10n.text("wallet.asset", lang: uiLanguageCode), selection: $assetCode) {
                             ForEach(CurrencyCatalog.allCurrencies.filter { $0.kind == kind }, id: \.code) { item in
                                 Text("\(item.code) — \(item.name)")
                                     .tag(item.code)
                             }
                         }
+                        .pickerStyle(.menu)
                     }
                 }
                 
-                Section("Balance") {
+                Section(L10n.text("wallet.balance", lang: uiLanguageCode)) {
                     TextField("0.00", text: $balanceText)
                         .keyboardType(.decimalPad)
                 }
+                
+                Section(L10n.text("wallet.folder", lang: uiLanguageCode)) {
+                    Picker(L10n.text("wallet.folder", lang: uiLanguageCode), selection: $selectedFolderID) {
+                        Text(L10n.text("common.none", lang: uiLanguageCode)).tag(PersistentIdentifier?.none)
+                        ForEach(walletFolders, id: \.persistentModelID) { folder in
+                            Text(folder.name).tag(Optional(folder.persistentModelID))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
             }
-            .navigationTitle(wallet == nil ? "New Wallet" : "Edit Wallet")
+            .navigationTitle(wallet == nil ? L10n.text("wallet.new", lang: uiLanguageCode) : L10n.text("wallet.edit", lang: uiLanguageCode))
+            .keyboardDismissBehavior()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L10n.text("common.cancel", lang: uiLanguageCode)) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button(L10n.text("common.save", lang: uiLanguageCode)) {
                         saveWallet()
                         dismiss()
                     }
@@ -1543,16 +2077,26 @@ struct AddWalletView: View {
         }
     }
     
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+    
     private func saveWallet() {
         guard let balance = parsedBalance else { return }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAsset = assetCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let selectedFolder = walletFolders.first { $0.persistentModelID == selectedFolderID }
         
         if let wallet {
             wallet.name = trimmedName
             wallet.kind = kind
             wallet.assetCode = trimmedAsset
             wallet.balance = balance
+            wallet.folder = selectedFolder
             wallet.updatedAt = Date()
         } else {
             let newWallet = Wallet(
@@ -1561,13 +2105,72 @@ struct AddWalletView: View {
                 kind: kind,
                 balance: balance
             )
+            newWallet.folder = selectedFolder
             modelContext.insert(newWallet)
         }
     }
 }
 
+struct AddWalletFolderView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    
+    private let folder: WalletFolder?
+    @State private var name: String
+    
+    init(folder: WalletFolder? = nil) {
+        self.folder = folder
+        _name = State(initialValue: folder?.name ?? "")
+    }
+    
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(L10n.text("common.name", lang: uiLanguageCode)) {
+                    TextField(L10n.text("folder.name_placeholder", lang: uiLanguageCode), text: $name)
+                }
+            }
+            .navigationTitle(folder == nil ? L10n.text("folder.new", lang: uiLanguageCode) : L10n.text("folder.edit", lang: uiLanguageCode))
+            .dismissKeyboardOnTap()
+            .keyboardDismissBehavior()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(L10n.text("common.cancel", lang: uiLanguageCode)) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(L10n.text("common.save", lang: uiLanguageCode)) {
+                        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if let folder {
+                            folder.name = trimmed
+                        } else {
+                            let folder = WalletFolder(name: trimmed)
+                            modelContext.insert(folder)
+                        }
+                        dismiss()
+                    }
+                    .disabled(!canSave)
+                }
+            }
+        }
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+}
+
 struct TotalsManagerView: View {
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @State private var selectedCodes: Set<String>
     let baseCurrencyCode: String
     let onSave: ([String]) -> Void
@@ -1595,13 +2198,14 @@ struct TotalsManagerView: View {
                     }
                 }
             }
-            .navigationTitle("Total Currencies")
+            .navigationTitle(L10n.text("total.currencies", lang: uiLanguageCode))
+            .dismissKeyboardOnTap()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(L10n.text("common.cancel", lang: uiLanguageCode)) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button(L10n.text("common.save", lang: uiLanguageCode)) {
                         let ordered = CurrencyCatalog.baseCurrencies
                             .map(\.code)
                             .filter { selectedCodes.contains($0) }
@@ -1618,6 +2222,14 @@ struct TotalsManagerView: View {
         }
     }
     
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+    
     private func toggle(_ code: String) {
         if selectedCodes.contains(code) {
             selectedCodes.remove(code)
@@ -1627,7 +2239,226 @@ struct TotalsManagerView: View {
     }
 }
 
+struct SettingsView: View {
+    @Environment(\.modelContext) private var modelContext
+    @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
+    @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @AppStorage("appTheme") private var appTheme = "system"
+    @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
+    
+    @Query(sort: \Category.name) private var categories: [Category]
+    
+    @State private var selectedType: CategoryType = .expense
+    @State private var isAddingCategory = false
+    @State private var editingCategory: Category?
+    
+    private let languages: [(code: String, title: String)] = [
+        ("system", "System"),
+        ("en", "English"),
+        ("ru", "Russian"),
+        ("uk", "Ukrainian"),
+        ("sv", "Swedish")
+    ]
+    
+    private let themes: [(code: String, titleKey: String)] = [
+        ("system", "settings.theme.system"),
+        ("light", "settings.theme.light"),
+        ("dark", "settings.theme.dark")
+    ]
+    
+    private var filteredCategories: [Category] {
+        categories.filter { $0.type == selectedType }
+    }
+    
+    private var controlsTint: Color {
+        .secondary
+    }
+    
+    var body: some View {
+        NavigationStack {
+            List {
+                Section(L10n.text("settings.language", lang: uiLanguageCode)) {
+                    Picker(L10n.text("settings.app_language", lang: uiLanguageCode), selection: $appLanguageCode) {
+                        ForEach(languages, id: \.code) { item in
+                            Text(item.title).tag(item.code)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(controlsTint)
+                }
+                
+                Section(L10n.text("settings.base_currency", lang: uiLanguageCode)) {
+                    Picker(L10n.text("settings.currency", lang: uiLanguageCode), selection: $baseCurrencyCode) {
+                        ForEach(CurrencyCatalog.baseCurrencies, id: \.code) { currency in
+                            Text("\(currency.code) — \(currency.name)")
+                                .tag(currency.code)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(controlsTint)
+                }
+                
+                Section(L10n.text("settings.theme", lang: uiLanguageCode)) {
+                    Picker(L10n.text("settings.theme", lang: uiLanguageCode), selection: $appTheme) {
+                        ForEach(themes, id: \.code) { item in
+                            Text(L10n.text(item.titleKey, lang: uiLanguageCode))
+                                .tag(item.code)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .tint(controlsTint)
+                }
+                
+                Section(L10n.text("settings.amounts", lang: uiLanguageCode)) {
+                    Toggle(L10n.text("settings.round_amounts", lang: uiLanguageCode), isOn: $isRoundedAmounts)
+                        .tint(controlsTint)
+                }
+                
+                Section {
+                    Picker(L10n.text("common.type", lang: uiLanguageCode), selection: $selectedType) {
+                        Text(L10n.text("common.expenses", lang: uiLanguageCode)).tag(CategoryType.expense)
+                        Text(L10n.text("common.income", lang: uiLanguageCode)).tag(CategoryType.income)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                
+                Section {
+                    if filteredCategories.isEmpty {
+                        Text(L10n.text("settings.no_tags", lang: uiLanguageCode))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(filteredCategories, id: \.persistentModelID) { category in
+                            CategoryRow(category: category)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    editingCategory = category
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
+                                        modelContext.delete(category)
+                                    }
+                                    Button(L10n.text("common.edit", lang: uiLanguageCode)) {
+                                        editingCategory = category
+                                    }
+                                }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text(L10n.text("settings.tags", lang: uiLanguageCode))
+                        Spacer()
+                        Button {
+                            isAddingCategory = true
+                        } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: "plus.circle")
+                                Text(L10n.text("settings.new_tags", lang: uiLanguageCode))
+                                    .font(.subheadline)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(L10n.text("settings.new_tags", lang: uiLanguageCode))
+                    }
+                }
+            }
+            .navigationTitle(L10n.text("tab.settings", lang: uiLanguageCode))
+            .sheet(isPresented: $isAddingCategory) {
+                AddCategoryView()
+            }
+            .sheet(
+                isPresented: Binding(
+                    get: { editingCategory != nil },
+                    set: { if !$0 { editingCategory = nil } }
+                )
+            ) {
+                if let editingCategory {
+                    AddCategoryView(category: editingCategory)
+                }
+            }
+        }
+    }
+    
+    private var uiLanguageCode: String {
+        if appLanguageCode == "system" {
+            let code = Locale.autoupdatingCurrent.language.languageCode?.identifier ?? "en"
+            return ["en", "ru", "uk", "sv"].contains(code) ? code : "en"
+        }
+        return appLanguageCode
+    }
+}
+
+enum L10n {
+    static func text(_ key: String, lang: String) -> String {
+        let code = ["en", "ru", "uk", "sv"].contains(lang) ? lang : "en"
+        if let bundle = bundle(for: code) {
+            let localized = NSLocalizedString(key, tableName: "Localizable", bundle: bundle, value: key, comment: "")
+            if localized != key {
+                return localized
+            }
+        }
+        if code != "en", let enBundle = bundle(for: "en") {
+            let fallback = NSLocalizedString(key, tableName: "Localizable", bundle: enBundle, value: key, comment: "")
+            if fallback != key {
+                return fallback
+            }
+        }
+        return key
+    }
+    
+    private static func bundle(for code: String) -> Bundle? {
+        guard let path = Bundle.main.path(forResource: code, ofType: "lproj") else { return nil }
+        return Bundle(path: path)
+    }
+}
+
+enum AppTheme {
+    static func colorScheme(from value: String) -> ColorScheme? {
+        switch value {
+        case "light":
+            return .light
+        case "dark":
+            return .dark
+        default:
+            return nil
+        }
+    }
+}
+
+private struct DismissKeyboardOnTapModifier: ViewModifier {
+    func body(content: Content) -> some View {
+#if canImport(UIKit)
+        content.simultaneousGesture(
+            TapGesture().onEnded {
+                UIApplication.shared.sendAction(
+                    #selector(UIResponder.resignFirstResponder),
+                    to: nil,
+                    from: nil,
+                    for: nil
+                )
+            }
+        )
+#else
+        content
+#endif
+    }
+}
+
+private extension View {
+    func dismissKeyboardOnTap() -> some View {
+        modifier(DismissKeyboardOnTapModifier())
+    }
+    
+    @ViewBuilder
+    func keyboardDismissBehavior() -> some View {
+#if os(iOS)
+        self.scrollDismissesKeyboard(.interactively)
+#else
+        self
+#endif
+    }
+}
+
 #Preview {
     ContentView()
-        .modelContainer(for: [Category.self, Transaction.self, Asset.self, Wallet.self], inMemory: true)
+        .modelContainer(for: [Category.self, Transaction.self, Asset.self, Wallet.self, WalletFolder.self], inMemory: true)
 }

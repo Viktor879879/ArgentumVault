@@ -40,6 +40,7 @@ final class RateService: ObservableObject {
     private let metalsLive = MetalsLiveProvider()
     private let binance = BinanceProvider()
     private let alphaVantage = AlphaVantageProvider()
+    private let yahooFinance = YahooFinanceProvider()
     
     init() {
         loadCache()
@@ -57,6 +58,18 @@ final class RateService: ObservableObject {
             fxRates = normalizedRates
             fxBase = snapshot.base
             lastFXUpdate = ISO8601DateFormatter().date(from: snapshot.date)
+            
+            if fxRates["USD"] == nil {
+                if baseCode == "USD" {
+                    fxRates["USD"] = 1
+                } else if let fallback = try? await exchangerateHost.latestRates(base: baseCode, symbols: ["USD"]),
+                          let usd = fallback.rates["USD"] {
+                    fxRates["USD"] = usd
+                } else if let usdToBase = try? await erApi.usdRate(for: baseCode),
+                          usdToBase > 0 {
+                    fxRates["USD"] = 1 / usdToBase
+                }
+            }
             
             if fxRates["UAH"] == nil {
                 if let fallback = try? await exchangerateHost.latestRates(base: baseCode, symbols: ["UAH"]) {
@@ -119,9 +132,14 @@ final class RateService: ObservableObject {
             }
             for symbol in stockSymbols {
                 group.addTask {
-                    if let price = try? await self.alphaVantage.globalQuotePrice(symbol: symbol) {
+                    if let price = try? await self.alphaVantage.latestAvailablePrice(symbol: symbol), price > 0 {
                         await MainActor.run {
                             self.stockUSDPrices[symbol] = price
+                            self.lastStockUpdate = Date()
+                        }
+                    } else if let yahooPrice = try? await self.yahooFinance.latestAvailablePrice(symbol: symbol), yahooPrice > 0 {
+                        await MainActor.run {
+                            self.stockUSDPrices[symbol] = yahooPrice
                             self.lastStockUpdate = Date()
                         }
                     }
@@ -361,6 +379,15 @@ struct BinanceProvider {
 }
 
 struct AlphaVantageProvider {
+    func latestAvailablePrice(symbol: String) async throws -> Double {
+        if let globalQuote = try? await globalQuotePrice(symbol: symbol), globalQuote > 0 {
+            return globalQuote
+        }
+        let dailyClose = try await latestDailyClose(symbol: symbol)
+        guard dailyClose > 0 else { throw RateServiceError.unexpectedResponse }
+        return dailyClose
+    }
+    
     func globalQuotePrice(symbol: String) async throws -> Double {
         let apiKey = try apiKey()
         guard var components = URLComponents(string: "https://www.alphavantage.co/query") else {
@@ -374,7 +401,36 @@ struct AlphaVantageProvider {
         guard let url = components.url else { throw RateServiceError.invalidURL }
         let (data, _) = try await URLSession.shared.data(from: url)
         let response = try JSONDecoder().decode(AlphaVantageGlobalQuoteResponse.self, from: data)
-        return Double(response.globalQuote.price) ?? 0
+        if let price = Double(response.globalQuote.price), price > 0 {
+            return price
+        }
+        if let previousClose = Double(response.globalQuote.previousClose), previousClose > 0 {
+            return previousClose
+        }
+        throw RateServiceError.unexpectedResponse
+    }
+    
+    func latestDailyClose(symbol: String) async throws -> Double {
+        let apiKey = try apiKey()
+        guard var components = URLComponents(string: "https://www.alphavantage.co/query") else {
+            throw RateServiceError.invalidURL
+        }
+        components.queryItems = [
+            URLQueryItem(name: "function", value: "TIME_SERIES_DAILY"),
+            URLQueryItem(name: "symbol", value: symbol),
+            URLQueryItem(name: "apikey", value: apiKey)
+        ]
+        guard let url = components.url else { throw RateServiceError.invalidURL }
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let response = try JSONDecoder().decode(AlphaVantageDailyResponse.self, from: data)
+        
+        guard let latestDay = response.timeSeriesDaily.keys.max(),
+              let point = response.timeSeriesDaily[latestDay],
+              let close = Double(point.close) else {
+            throw RateServiceError.unexpectedResponse
+        }
+        
+        return close
     }
     
     private func apiKey() throws -> String {
@@ -395,9 +451,27 @@ struct AlphaVantageProvider {
     
     private struct AlphaVantageGlobalQuote: Decodable {
         let price: String
+        let previousClose: String
         
         private enum CodingKeys: String, CodingKey {
             case price = "05. price"
+            case previousClose = "08. previous close"
+        }
+    }
+    
+    private struct AlphaVantageDailyResponse: Decodable {
+        let timeSeriesDaily: [String: AlphaVantageDailyPoint]
+        
+        private enum CodingKeys: String, CodingKey {
+            case timeSeriesDaily = "Time Series (Daily)"
+        }
+    }
+    
+    private struct AlphaVantageDailyPoint: Decodable {
+        let close: String
+        
+        private enum CodingKeys: String, CodingKey {
+            case close = "4. close"
         }
     }
 }
@@ -414,6 +488,67 @@ struct ExchangerateHostProvider {
         guard let url = components.url else { throw RateServiceError.invalidURL }
         let (data, _) = try await URLSession.shared.data(from: url)
         return try JSONDecoder().decode(FXRatesSnapshot.self, from: data)
+    }
+}
+
+struct YahooFinanceProvider {
+    func latestAvailablePrice(symbol: String) async throws -> Double {
+        guard var components = URLComponents(string: "https://query1.finance.yahoo.com/v8/finance/chart/\(symbol)") else {
+            throw RateServiceError.invalidURL
+        }
+        components.queryItems = [
+            URLQueryItem(name: "interval", value: "1d"),
+            URLQueryItem(name: "range", value: "5d"),
+            URLQueryItem(name: "includePrePost", value: "false")
+        ]
+        guard let url = components.url else { throw RateServiceError.invalidURL }
+        
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let response = try JSONDecoder().decode(YahooChartResponse.self, from: data)
+        
+        guard let result = response.chart.result?.first else {
+            throw RateServiceError.unexpectedResponse
+        }
+        
+        if let market = result.meta.regularMarketPrice, market > 0 {
+            return market
+        }
+        if let previous = result.meta.previousClose, previous > 0 {
+            return previous
+        }
+        if let quote = result.indicators.quote.first,
+           let close = quote.close?.compactMap({ $0 }).last,
+           close > 0 {
+            return close
+        }
+        
+        throw RateServiceError.unexpectedResponse
+    }
+    
+    private struct YahooChartResponse: Decodable {
+        let chart: YahooChart
+    }
+    
+    private struct YahooChart: Decodable {
+        let result: [YahooChartResult]?
+    }
+    
+    private struct YahooChartResult: Decodable {
+        let meta: YahooMeta
+        let indicators: YahooIndicators
+    }
+    
+    private struct YahooMeta: Decodable {
+        let regularMarketPrice: Double?
+        let previousClose: Double?
+    }
+    
+    private struct YahooIndicators: Decodable {
+        let quote: [YahooQuote]
+    }
+    
+    private struct YahooQuote: Decodable {
+        let close: [Double?]?
     }
 }
 

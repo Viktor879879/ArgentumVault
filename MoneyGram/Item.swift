@@ -58,6 +58,8 @@ final class Transaction {
     var date: Date
     var note: String?
     var type: TransactionType?
+    var walletNameSnapshot: String?
+    var walletKindRaw: String?
     
     @Attribute(.externalStorage)
     var photoData: Data?
@@ -74,6 +76,8 @@ final class Transaction {
         date: Date = Date(),
         note: String? = nil,
         type: TransactionType = TransactionType.expense,
+        walletNameSnapshot: String? = nil,
+        walletKindRaw: String? = nil,
         photoData: Data? = nil,
         category: Category? = nil,
         wallet: Wallet? = nil
@@ -83,6 +87,8 @@ final class Transaction {
         self.date = date
         self.note = note
         self.type = type
+        self.walletNameSnapshot = walletNameSnapshot
+        self.walletKindRaw = walletKindRaw
         self.photoData = photoData
         self.category = category
         self.wallet = wallet
@@ -111,6 +117,8 @@ final class Wallet {
     var createdAt: Date
     var updatedAt: Date
     
+    var folder: WalletFolder?
+    
     init(
         name: String,
         assetCode: String,
@@ -125,5 +133,17 @@ final class Wallet {
         self.balance = balance
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+}
+
+@Model
+final class WalletFolder {
+    var name: String
+    var createdAt: Date
+    var wallets: [Wallet] = []
+    
+    init(name: String, createdAt: Date = Date()) {
+        self.name = name
+        self.createdAt = createdAt
     }
 }
