@@ -23,6 +23,7 @@ enum AssetKind: String, Codable, CaseIterable {
 enum TransactionType: String, Codable, CaseIterable {
     case expense
     case income
+    case transfer
 }
 
 @Model
@@ -60,6 +61,12 @@ final class Transaction {
     var type: TransactionType?
     var walletNameSnapshot: String?
     var walletKindRaw: String?
+    var walletColorHexSnapshot: String?
+    var transferWalletNameSnapshot: String?
+    var transferWalletCurrencyCode: String?
+    var transferWalletKindRaw: String?
+    var transferWalletColorHexSnapshot: String?
+    var transferAmount: Decimal?
     
     @Attribute(.externalStorage)
     var photoData: Data?
@@ -70,6 +77,9 @@ final class Transaction {
     @Relationship(deleteRule: .nullify)
     var wallet: Wallet?
     
+    @Relationship(deleteRule: .nullify)
+    var transferWallet: Wallet?
+    
     init(
         amount: Decimal,
         currencyCode: String,
@@ -78,9 +88,16 @@ final class Transaction {
         type: TransactionType = TransactionType.expense,
         walletNameSnapshot: String? = nil,
         walletKindRaw: String? = nil,
+        walletColorHexSnapshot: String? = nil,
+        transferWalletNameSnapshot: String? = nil,
+        transferWalletCurrencyCode: String? = nil,
+        transferWalletKindRaw: String? = nil,
+        transferWalletColorHexSnapshot: String? = nil,
+        transferAmount: Decimal? = nil,
         photoData: Data? = nil,
         category: Category? = nil,
-        wallet: Wallet? = nil
+        wallet: Wallet? = nil,
+        transferWallet: Wallet? = nil
     ) {
         self.amount = amount
         self.currencyCode = currencyCode
@@ -89,9 +106,16 @@ final class Transaction {
         self.type = type
         self.walletNameSnapshot = walletNameSnapshot
         self.walletKindRaw = walletKindRaw
+        self.walletColorHexSnapshot = walletColorHexSnapshot
+        self.transferWalletNameSnapshot = transferWalletNameSnapshot
+        self.transferWalletCurrencyCode = transferWalletCurrencyCode
+        self.transferWalletKindRaw = transferWalletKindRaw
+        self.transferWalletColorHexSnapshot = transferWalletColorHexSnapshot
+        self.transferAmount = transferAmount
         self.photoData = photoData
         self.category = category
         self.wallet = wallet
+        self.transferWallet = transferWallet
     }
 }
 
@@ -114,6 +138,7 @@ final class Wallet {
     var assetCode: String
     var kind: AssetKind
     var balance: Decimal
+    var colorHex: String?
     var createdAt: Date
     var updatedAt: Date
     
@@ -124,6 +149,7 @@ final class Wallet {
         assetCode: String,
         kind: AssetKind,
         balance: Decimal,
+        colorHex: String? = "FFFFFFFF",
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -131,6 +157,7 @@ final class Wallet {
         self.assetCode = assetCode
         self.kind = kind
         self.balance = balance
+        self.colorHex = colorHex
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
