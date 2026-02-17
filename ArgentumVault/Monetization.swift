@@ -351,7 +351,7 @@ struct InlineAdCard: View {
 
 #if canImport(UIKit) && canImport(GoogleMobileAds)
             if canShowLiveAd {
-                AdMobBannerContainer(adUnitID: bannerUnitID)
+                AdMobBannerContainer(adUnitID: bannerUnitID, lang: lang)
                     .frame(maxWidth: .infinity)
                     .frame(height: 54)
             } else {
@@ -378,35 +378,107 @@ struct InlineAdCard: View {
 #if canImport(UIKit) && canImport(GoogleMobileAds)
 private struct AdMobBannerContainer: View {
     let adUnitID: String
+    let lang: String
+    @StateObject private var loadObserver = BannerLoadObserver()
+    @State private var effectiveAdUnitID = ""
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = max(320, proxy.size.width)
-            AdMobBannerView(adUnitID: adUnitID, width: width)
+        ZStack {
+            GeometryReader { proxy in
+                let width = max(320, proxy.size.width)
+                AdMobBannerView(
+                    adUnitID: effectiveAdUnitID.isEmpty ? adUnitID : effectiveAdUnitID,
+                    width: width,
+                    loadObserver: loadObserver
+                )
                 .frame(width: proxy.size.width, height: 54, alignment: .center)
+            }
+            .frame(height: 54)
+
+            if !loadObserver.didLoad {
+                Text(L10n.text("ad.inline.pending", lang: lang))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(height: 54)
+        .onAppear {
+            if effectiveAdUnitID != adUnitID {
+                effectiveAdUnitID = adUnitID
+                loadObserver.reset()
+            }
+        }
+        .onChange(of: adUnitID) {
+            effectiveAdUnitID = adUnitID
+            loadObserver.reset()
+        }
+        .onChange(of: loadObserver.didFail) { _, failed in
+#if DEBUG
+            guard failed else { return }
+            guard !AdsDefaults.isGoogleSampleBannerUnitID(effectiveAdUnitID) else { return }
+            effectiveAdUnitID = AdsDefaults.debugFallbackTestBannerUnitID
+            loadObserver.reset()
+#endif
+        }
     }
 }
 
 private struct AdMobBannerView: UIViewRepresentable {
     let adUnitID: String
     let width: CGFloat
+    @ObservedObject var loadObserver: BannerLoadObserver
 
     func makeUIView(context: Context) -> BannerView {
         let bannerView = BannerView(adSize: currentOrientationAnchoredAdaptiveBanner(width: width))
         bannerView.adUnitID = adUnitID
         bannerView.rootViewController = UIApplication.activeRootViewController
+        bannerView.delegate = context.coordinator
         bannerView.load(Request())
         return bannerView
     }
 
     func updateUIView(_ uiView: BannerView, context: Context) {
         uiView.rootViewController = UIApplication.activeRootViewController
+        if uiView.adUnitID != adUnitID {
+            loadObserver.reset()
+            uiView.adUnitID = adUnitID
+            uiView.load(Request())
+        }
         let size = currentOrientationAnchoredAdaptiveBanner(width: width)
         if !isAdSizeEqualToSize(size1: uiView.adSize, size2: size) {
             uiView.adSize = size
+            loadObserver.reset()
             uiView.load(Request())
+        }
+    }
+
+    func makeCoordinator() -> BannerLoadObserver {
+        loadObserver
+    }
+}
+
+@MainActor
+private final class BannerLoadObserver: NSObject, ObservableObject, BannerViewDelegate {
+    @Published var didLoad = false
+    @Published var didFail = false
+
+    func reset() {
+        didLoad = false
+        didFail = false
+    }
+
+    nonisolated func bannerViewDidReceiveAd(_ bannerView: BannerView) {
+        Task { @MainActor in
+            didLoad = true
+            didFail = false
+        }
+    }
+
+    nonisolated func bannerView(_ bannerView: BannerView, didFailToReceiveAdWithError error: any Error) {
+        Task { @MainActor in
+            didLoad = false
+            didFail = true
         }
     }
 }

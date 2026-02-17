@@ -227,9 +227,10 @@ private struct AdsRemotePayload: Decodable {
     }
 }
 
-private enum AdsDefaults {
+enum AdsDefaults {
+    static let debugFallbackTestBannerUnitID = "ca-app-pub-3940256099942544/2435281174"
     private static let googleSampleBannerUnitIDs: Set<String> = [
-        "ca-app-pub-3940256099942544/2435281174"
+        debugFallbackTestBannerUnitID
     ]
     private static let slotInfoKeyBySlot: [AdSlot: String] = [
         .homeBottomBanner: "AdsHomeBottomBannerUnitID"
@@ -282,7 +283,7 @@ private enum AdsDefaults {
         return nil
     }
 
-    private static func isGoogleSampleBannerUnitID(_ unitID: String) -> Bool {
+    static func isGoogleSampleBannerUnitID(_ unitID: String) -> Bool {
         googleSampleBannerUnitIDs.contains(unitID)
     }
 
