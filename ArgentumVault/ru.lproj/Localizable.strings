@@ -161,7 +161,7 @@
 "settings.account.connected" = "Подключено через Apple ID";
 "settings.account.sign_out" = "Выйти";
 "settings.account.sync_hint_pro" = "Pro: данные синхронизируются и резервируются через iCloud (CloudKit).";
-"settings.account.sync_hint_free" = "Free: данные хранятся только на этом устройстве, без iCloud-синхронизации и бэкапа.";
+"settings.account.sync_hint_free" = "Free: базовые функции доступны, а бэкап в iCloud работает при доступном CloudKit.";
 "settings.account.authorizing" = "Авторизация Apple ID...";
 "settings.account.simulator_hint" = "В симуляторе сначала войдите в Apple ID в Настройках или используйте реальное устройство.";
 "settings.account.error_title" = "Ошибка входа";

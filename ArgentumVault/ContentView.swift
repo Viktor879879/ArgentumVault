@@ -314,7 +314,6 @@ struct FirstLaunchSetupView: View {
     @State private var showAppleAuthError = false
     @State private var appleAuthErrorMessage = ""
     @State private var activeEmailAuthMode: EmailAuthMode?
-    @State private var didRetryAppleSignIn = false
 
     private let requiresPreferencesStep: Bool
 
@@ -511,7 +510,6 @@ struct FirstLaunchSetupView: View {
                 return
             }
             showAppleAuthError = false
-            didRetryAppleSignIn = false
             emailUserEmail = ""
             appleUserID = credential.user
             authMethod = "apple"
@@ -527,6 +525,8 @@ struct FirstLaunchSetupView: View {
             if !fullName.isEmpty {
                 appleUserName = fullName
             }
+            SessionEvents.postAccountSessionDidChange()
+            syncBackupImmediately(accountIdentifier: "apple:\(credential.user)")
             triggerProRestoreAfterAuthorization()
             if let accountID = SetupProfileStore.appleAccountID(credential.user),
                restoreSetupProfileIfPresent(for: accountID) {
@@ -537,12 +537,6 @@ struct FirstLaunchSetupView: View {
             if let appleError = error as? ASAuthorizationError, appleError.code == .canceled {
                 return
             }
-            if let appleError = error as? ASAuthorizationError, appleError.code == .notHandled, !didRetryAppleSignIn {
-                didRetryAppleSignIn = true
-                startAppleSignIn()
-                return
-            }
-            didRetryAppleSignIn = false
             appleAuthErrorMessage = localizedAppleSignInError(error)
             showAppleAuthError = true
         }
@@ -554,12 +548,33 @@ struct FirstLaunchSetupView: View {
         appleUserName = ""
         emailUserEmail = email
         authMethod = "email"
+        SessionEvents.postAccountSessionDidChange()
+        syncBackupImmediately(accountIdentifier: "email:\(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())")
         triggerProRestoreAfterAuthorization()
         if let accountID = SetupProfileStore.emailAccountID(email),
            restoreSetupProfileIfPresent(for: accountID) {
             return
         }
         proceedAfterAuth()
+    }
+
+    private func syncBackupImmediately(accountIdentifier: String) {
+        Task { @MainActor in
+            let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
+                modelContext: modelContext,
+                accountIdentifier: accountIdentifier
+            )) ?? false
+            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                modelContext: modelContext,
+                didRestore: didRestore
+            ) {
+                ICloudBackupManager.backupIfNeeded(
+                    modelContext: modelContext,
+                    accountIdentifier: accountIdentifier,
+                    force: true
+                )
+            }
+        }
     }
 
     private func openEmailAuth(mode: EmailAuthMode) {
@@ -708,7 +723,7 @@ struct HomeView: View {
     @State private var isAddingWalletFolder = false
     @State private var editingWalletFolder: WalletFolder?
     @State private var editingWallet: Wallet?
-    @State private var viewingWallet: Wallet?
+    @State private var viewingWallet: WalletDetailPayload?
     @State private var isManagingTotals = false
     @State private var walletToDeleteName: String?
     @State private var walletToDeleteAssetCode: String?
@@ -720,6 +735,10 @@ struct HomeView: View {
     
     private var ungroupedWallets: [Wallet] {
         wallets.filter { $0.folder == nil }
+    }
+
+    private var walletRateSnapshots: [WalletRateSnapshot] {
+        wallets.map { WalletRateSnapshot(assetCode: $0.assetCode, kind: $0.kind) }
     }
     
     private var totalCurrencies: [String] {
@@ -876,7 +895,8 @@ struct HomeView: View {
                 syncFolderCollapseState()
             }
             .onChange(of: baseCurrencyCode) {
-                Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: wallets, force: true) }
+                let snapshots = walletRateSnapshots
+                Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: snapshots, force: true) }
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -889,7 +909,8 @@ struct HomeView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: wallets, force: true) }
+                        let snapshots = walletRateSnapshots
+                        Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: snapshots, force: true) }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -906,7 +927,8 @@ struct HomeView: View {
             }
             .task {
                 processRecurringRulesIfNeeded()
-                await rateService.refreshAllRates(base: baseCurrencyCode, wallets: wallets, force: false)
+                let snapshots = walletRateSnapshots
+                await rateService.refreshAllRates(base: baseCurrencyCode, wallets: snapshots, force: false)
             }
             .sheet(isPresented: $isAddingTransaction) {
                 AddTransactionView(defaultCurrencyCode: baseCurrencyCode, rateService: rateService)
@@ -986,6 +1008,7 @@ struct HomeView: View {
                         }
                     }
                     modelContext.delete(wallet)
+                    try? modelContext.save()
                     walletToDeleteName = nil
                     walletToDeleteAssetCode = nil
                 }
@@ -1014,6 +1037,7 @@ struct HomeView: View {
             destinationWallet?.balance -= (transaction.transferAmount ?? transaction.amount)
         }
         modelContext.delete(transaction)
+        try? modelContext.save()
     }
     
     private func deleteWalletFolder(_ folder: WalletFolder) {
@@ -1022,6 +1046,7 @@ struct HomeView: View {
         }
         collapsedFolderIDs.remove(folder.persistentModelID)
         modelContext.delete(folder)
+        try? modelContext.save()
     }
     
     private func toggleFolder(_ folder: WalletFolder) {
@@ -1035,16 +1060,19 @@ struct HomeView: View {
     private func processRecurringRulesIfNeeded() {
         let now = Date()
         let maxGeneratedPerRule = 120
+        var didMutateData = false
 
         for rule in recurringRules where rule.isActive {
             guard let wallet = rule.wallet else {
                 rule.isActive = false
                 rule.updatedAt = now
+                didMutateData = true
                 continue
             }
             guard rule.type != .transfer else {
                 rule.isActive = false
                 rule.updatedAt = now
+                didMutateData = true
                 continue
             }
 
@@ -1059,7 +1087,11 @@ struct HomeView: View {
                 )
                 rule.updatedAt = now
                 generatedCount += 1
+                didMutateData = true
             }
+        }
+        if didMutateData {
+            try? modelContext.save()
         }
     }
 
@@ -1183,7 +1215,13 @@ struct HomeView: View {
         WalletRow(wallet: wallet)
             .contentShape(Rectangle())
             .onTapGesture {
-                viewingWallet = wallet
+                viewingWallet = WalletDetailPayload(
+                    id: wallet.persistentModelID,
+                    name: wallet.name,
+                    assetCode: wallet.assetCode,
+                    balance: wallet.balance,
+                    kind: wallet.kind
+                )
             }
             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
@@ -1198,6 +1236,14 @@ struct HomeView: View {
                 .tint(Color(hex: "4A4A4AFF"))
             }
     }
+}
+
+struct WalletDetailPayload: Identifiable {
+    let id: PersistentIdentifier
+    let name: String
+    let assetCode: String
+    let balance: Decimal
+    let kind: AssetKind
 }
 
 struct TotalsHeader: View {
@@ -1425,6 +1471,10 @@ struct AnalyticsView: View {
     @State private var selectedRange: AnalyticsRange = .month
     @State private var rangeAnchor: Date = Date()
     @State private var selectedWalletID: PersistentIdentifier?
+
+    private var walletRateSnapshots: [WalletRateSnapshot] {
+        analyticsWallets.map { WalletRateSnapshot(assetCode: $0.assetCode, kind: $0.kind) }
+    }
     
     var body: some View {
         NavigationStack {
@@ -1629,13 +1679,15 @@ struct AnalyticsView: View {
             }
         }
         .task {
-            await rateService.refreshAllRates(base: baseCurrencyCode, wallets: analyticsWallets, force: false)
+            let snapshots = walletRateSnapshots
+            await rateService.refreshAllRates(base: baseCurrencyCode, wallets: snapshots, force: false)
         }
         .onChange(of: selectedRange) {
             rangeAnchor = Date()
         }
         .onChange(of: baseCurrencyCode) {
-            Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: analyticsWallets, force: true) }
+            let snapshots = walletRateSnapshots
+            Task { await rateService.refreshAllRates(base: baseCurrencyCode, wallets: snapshots, force: true) }
         }
     }
 
@@ -2747,7 +2799,7 @@ struct WalletDetailView: View {
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     
-    let wallet: Wallet
+    let wallet: WalletDetailPayload
     @ObservedObject var rateService: RateService
     
     @Query(sort: \Transaction.date, order: .reverse) private var transactions: [Transaction]
@@ -2823,12 +2875,13 @@ struct WalletDetailView: View {
             .sheet(isPresented: $isAddingTransaction) {
                 AddTransactionView(
                     defaultCurrencyCode: wallet.assetCode,
-                    preselectedWalletID: wallet.persistentModelID,
+                    preselectedWalletID: wallet.id,
                     rateService: rateService
                 )
             }
             .task {
-                await rateService.refreshAllRates(base: baseCurrencyCode, wallets: [wallet], force: false)
+                let snapshots = [WalletRateSnapshot(assetCode: wallet.assetCode, kind: wallet.kind)]
+                await rateService.refreshAllRates(base: baseCurrencyCode, wallets: snapshots, force: false)
             }
         }
     }
@@ -3143,6 +3196,7 @@ struct AddCategoryView: View {
             )
             modelContext.insert(newCategory)
         }
+        try? modelContext.save()
     }
     
     private func parseHex(_ value: String) -> String? {
@@ -3521,6 +3575,7 @@ struct AddTransactionView: View {
             )
             modelContext.insert(newTransaction)
         }
+        try? modelContext.save()
     }
     
     private func loadPhoto() async {
@@ -3958,6 +4013,7 @@ struct AddWalletView: View {
             newWallet.folder = selectedFolder
             modelContext.insert(newWallet)
         }
+        try? modelContext.save()
     }
     
     private var colorOptions: [String] {
@@ -4032,6 +4088,7 @@ struct AddWalletFolderView: View {
                             let folder = WalletFolder(name: trimmed)
                             modelContext.insert(folder)
                         }
+                        try? modelContext.save()
                         dismiss()
                     }
                     .disabled(!canSave)
@@ -4150,6 +4207,12 @@ struct SettingsView: View {
     @State private var showPaywall = false
     @State private var showEmailAuthSheet = false
     @State private var appleSignInCoordinator = AppleSignInCoordinator()
+#if DEBUG
+    @State private var cloudDebugStatus: ICloudBackupManager.SnapshotDebugStatus?
+    @State private var cloudDebugMessage = ""
+    @State private var isCloudDebugBusy = false
+    @State private var cloudDebugOperationToken: UUID?
+#endif
     
     private let languages: [String] = [
         "system",
@@ -4233,25 +4296,116 @@ struct SettingsView: View {
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
                     }
-                    Text(subscriptionManager.hasProAccess
-                         ? L10n.text("settings.account.sync_hint_pro", lang: uiLanguageCode)
-                         : L10n.text("settings.account.sync_hint_free", lang: uiLanguageCode))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(storageModeDiagnosticsText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    if let storageFallbackReasonText {
-                        Text(storageFallbackReasonText)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-#if targetEnvironment(simulator)
-                    Text(L10n.text("settings.account.simulator_hint", lang: uiLanguageCode))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-#endif
                 }
+#if DEBUG
+                if isAccountConnected {
+                    Section("CloudKit Debug") {
+                        if let status = cloudDebugStatus {
+                            Text("Bucket: \(status.accountBucket)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+
+                            Text("Storage mode: \(status.storageMode)")
+                                .font(.subheadline)
+
+                            if let reason = status.storageReasonCode, !reason.isEmpty {
+                                Text("Reason: \(reason)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            if let storageError = status.storageError, !storageError.isEmpty {
+                                Text("Cloud error: \(storageError)")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+
+                            Text("Last local backup: \(debugDateText(status.lastLocalSuccess))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Last CloudKit upload: \(debugDateText(status.lastCloudSuccess))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            if let cloudError = status.lastCloudError, !cloudError.isEmpty {
+                                Text("Last upload error: \(cloudError)")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+
+                            if let localError = status.lastLocalError, !localError.isEmpty {
+                                Text("Last local backup error: \(localError)")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                            }
+                        } else {
+                            Text("No debug status yet")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Button {
+                            refreshCloudDebugStatus()
+                        } label: {
+                            HStack {
+                                Text("Refresh cloud status")
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            forceCloudBackupNow()
+                        } label: {
+                            HStack {
+                                Text("Force cloud backup now")
+                                Spacer()
+                                if isCloudDebugBusy {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            restoreFromCloudNow()
+                        } label: {
+                            HStack {
+                                Text("Try restore from cloud")
+                                Spacer()
+                                if isCloudDebugBusy {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+
+                        if isCloudDebugBusy {
+                            Button(role: .destructive) {
+                                resetCloudDebugLock(message: "Debug lock reset manually.")
+                            } label: {
+                                HStack {
+                                    Text("Reset debug lock")
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        if !cloudDebugMessage.isEmpty {
+                            Text(cloudDebugMessage)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+#endif
 
                 Section(L10n.text("pro.title_short", lang: uiLanguageCode)) {
                     if subscriptionManager.hasProAccess {
@@ -4354,6 +4508,7 @@ struct SettingsView: View {
                                 .tint(Color(hex: "4A4A4AFF"))
                                 Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
                                     modelContext.delete(rule)
+                                    try? modelContext.save()
                                 }
                                 .tint(.red)
                             }
@@ -4399,6 +4554,7 @@ struct SettingsView: View {
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     Button(L10n.text("common.delete", lang: uiLanguageCode), role: .destructive) {
                                         modelContext.delete(category)
+                                        try? modelContext.save()
                                     }
                                     .tint(.red)
                                     Button(L10n.text("common.edit", lang: uiLanguageCode)) {
@@ -4477,6 +4633,9 @@ struct SettingsView: View {
                 validateAppleCredentialIfNeeded()
                 persistSetupProfileIfPossible()
                 Task { await subscriptionManager.start() }
+#if DEBUG
+                refreshCloudDebugStatus()
+#endif
             }
             .onChange(of: appLanguageCode) {
                 persistSetupProfileIfPossible()
@@ -4487,6 +4646,11 @@ struct SettingsView: View {
             .onChange(of: appCountryCode) {
                 persistSetupProfileIfPossible()
             }
+#if DEBUG
+            .onChange(of: isAccountConnected) {
+                refreshCloudDebugStatus()
+            }
+#endif
         }
     }
     
@@ -4537,6 +4701,23 @@ struct SettingsView: View {
         return L10n.text(localizationKey, lang: uiLanguageCode)
     }
 
+    private var storageTechnicalErrorText: String? {
+        let defaults = UserDefaults.standard
+        let mode = defaults.string(forKey: "storage.mode.active") ?? "local"
+        let requestedCloud = defaults.bool(forKey: "storage.mode.requested_cloud")
+        guard requestedCloud, mode != "cloud" else {
+            return nil
+        }
+
+        let rawError = defaults.string(forKey: "storage.cloudkit.last_error")?.trimmed ?? ""
+        guard !rawError.isEmpty else {
+            return nil
+        }
+
+        let prefix = L10n.text("settings.storage.error_prefix", lang: uiLanguageCode)
+        return "\(prefix): \(rawError)"
+    }
+
     private func recurringDateText(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = DateFormatterCache.locale(for: uiLanguageCode)
@@ -4569,8 +4750,13 @@ struct SettingsView: View {
             if !fullName.isEmpty {
                 appleUserName = fullName
             }
+            SessionEvents.postAccountSessionDidChange()
+            syncBackupImmediately(accountIdentifier: "apple:\(credential.user)")
             triggerProRestoreAfterAuthorization()
             persistSetupProfileIfPossible()
+#if DEBUG
+            refreshCloudDebugStatus()
+#endif
         case .failure(let error):
             if let appleError = error as? ASAuthorizationError, appleError.code == .canceled {
                 return
@@ -4607,6 +4793,7 @@ struct SettingsView: View {
         appleUserName = ""
         emailUserEmail = ""
         authMethod = ""
+        SessionEvents.postAccountSessionDidChange()
     }
 
     private func handleEmailAuthSuccess(email: String) {
@@ -4615,8 +4802,32 @@ struct SettingsView: View {
         appleUserName = ""
         emailUserEmail = email
         authMethod = "email"
+        SessionEvents.postAccountSessionDidChange()
+        syncBackupImmediately(accountIdentifier: "email:\(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())")
         triggerProRestoreAfterAuthorization()
         persistSetupProfileIfPossible()
+#if DEBUG
+        refreshCloudDebugStatus()
+#endif
+    }
+
+    private func syncBackupImmediately(accountIdentifier: String) {
+        Task { @MainActor in
+            let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
+                modelContext: modelContext,
+                accountIdentifier: accountIdentifier
+            )) ?? false
+            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                modelContext: modelContext,
+                didRestore: didRestore
+            ) {
+                ICloudBackupManager.backupIfNeeded(
+                    modelContext: modelContext,
+                    accountIdentifier: accountIdentifier,
+                    force: true
+                )
+            }
+        }
     }
 
     private func triggerProRestoreAfterAuthorization() {
@@ -4624,6 +4835,120 @@ struct SettingsView: View {
             await subscriptionManager.restoreAfterAuthorization()
         }
     }
+
+#if DEBUG
+    private var currentBackupAccountIdentifier: String? {
+        switch authMethod {
+        case "apple":
+            guard !appleUserID.isEmpty else { return nil }
+            return "apple:\(appleUserID)"
+        case "email":
+            let email = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !email.isEmpty else { return nil }
+            return "email:\(email)"
+        default:
+            if !appleUserID.isEmpty {
+                return "apple:\(appleUserID)"
+            }
+            let email = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return email.isEmpty ? nil : "email:\(email)"
+        }
+    }
+
+    private func refreshCloudDebugStatus() {
+        guard let accountIdentifier = currentBackupAccountIdentifier else {
+            cloudDebugStatus = nil
+            cloudDebugMessage = "No active account identifier."
+            return
+        }
+        cloudDebugStatus = ICloudBackupManager.debugStatus(accountIdentifier: accountIdentifier)
+    }
+
+    private func forceCloudBackupNow() {
+        guard let accountIdentifier = currentBackupAccountIdentifier else {
+            cloudDebugMessage = "No active account identifier."
+            return
+        }
+        guard let token = startCloudDebugOperation(message: "Running forced backup...") else {
+            return
+        }
+        Task { @MainActor in
+            ICloudBackupManager.backupIfNeeded(
+                modelContext: modelContext,
+                accountIdentifier: accountIdentifier,
+                force: true
+            )
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            refreshCloudDebugStatus()
+            finishCloudDebugOperation(
+                token: token,
+                message: "Forced backup finished. Refresh CloudKit Dashboard."
+            )
+        }
+    }
+
+    private func restoreFromCloudNow() {
+        guard let accountIdentifier = currentBackupAccountIdentifier else {
+            cloudDebugMessage = "No active account identifier."
+            return
+        }
+        guard let token = startCloudDebugOperation(message: "Trying restore from cloud...") else {
+            return
+        }
+        Task { @MainActor in
+            let restored = (try? await ICloudBackupManager.restoreIfNeeded(
+                modelContext: modelContext,
+                accountIdentifier: accountIdentifier
+            )) ?? false
+            refreshCloudDebugStatus()
+            finishCloudDebugOperation(
+                token: token,
+                message: restored
+                    ? "Restore completed from cloud snapshot."
+                    : "No cloud snapshot found for this account."
+            )
+        }
+    }
+
+    private func startCloudDebugOperation(message: String) -> UUID? {
+        if isCloudDebugBusy {
+            cloudDebugMessage = "Another debug action is running. If it hangs, tap Reset debug lock."
+            return nil
+        }
+        let token = UUID()
+        cloudDebugOperationToken = token
+        isCloudDebugBusy = true
+        cloudDebugMessage = message
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard isCloudDebugBusy, cloudDebugOperationToken == token else { return }
+            resetCloudDebugLock(message: "Debug action timed out. Try again.")
+        }
+        return token
+    }
+
+    private func finishCloudDebugOperation(token: UUID, message: String) {
+        guard cloudDebugOperationToken == token else { return }
+        cloudDebugOperationToken = nil
+        isCloudDebugBusy = false
+        cloudDebugMessage = message
+    }
+
+    private func resetCloudDebugLock(message: String) {
+        cloudDebugOperationToken = nil
+        isCloudDebugBusy = false
+        cloudDebugMessage = message
+    }
+
+    private func debugDateText(_ date: Date?) -> String {
+        guard let date else { return "never" }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
+#endif
 
     private func persistSetupProfileIfPossible() {
         guard didCompleteInitialSetup, !baseCurrencyCode.trimmed.isEmpty else { return }
@@ -4937,6 +5262,7 @@ struct AddRecurringRuleView: View {
             )
             modelContext.insert(newRule)
         }
+        try? modelContext.save()
     }
 }
 

@@ -164,7 +164,7 @@
 "pro.ai.daily_tip.over_generic" = "Щоб вкластися в ціль на сьогодні, витратьте приблизно на %@ менше.";
 "pro.ai.daily_tip.on_track" = "Ви в межах цілі. Сьогодні можна додатково зекономити близько %@.";
 "settings.account.sync_hint_pro" = "Pro: дані синхронізуються та резервуються через iCloud (CloudKit).";
-"settings.account.sync_hint_free" = "Free: дані зберігаються лише на цьому пристрої, без iCloud-синхронізації та бекапу.";
+"settings.account.sync_hint_free" = "Free: базові функції доступні, а iCloud-бекап працює за наявності CloudKit.";
 "pro.subtitle" = "Відкрийте iCloud Sync & Backup, розширену аналітику, AI-інсайти та вимкніть рекламу.";
 "pro.upsell.short" = "Переходьте на Pro: iCloud Sync & Backup, синхронізація між пристроями, глибша аналітика та без реклами.";
 "pro.feature.icloud_sync_backup" = "Синхронізація та бекап iCloud між пристроями";

@@ -1,4 +1,4 @@
-//
+    //
 //  Item.swift
 //  ArgentumVault
 //
@@ -38,17 +38,20 @@ enum BudgetPeriod: String, Codable, CaseIterable {
 
 @Model
 final class Category {
-    var name: String
-    var type: CategoryType
-    var colorHex: String
-    var createdAt: Date
-    var updatedAt: Date
+    var name: String = ""
+    var type: CategoryType = CategoryType.expense
+    var colorHex: String = "FFFFFFFF"
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
     
     @Relationship(deleteRule: .nullify, inverse: \Transaction.category)
-    var transactions: [Transaction] = []
+    var transactions: [Transaction]?
 
     @Relationship(deleteRule: .nullify, inverse: \CategoryBudget.category)
-    var budgets: [CategoryBudget] = []
+    var budgets: [CategoryBudget]?
+
+    @Relationship(deleteRule: .nullify, inverse: \RecurringTransactionRule.category)
+    var recurringRules: [RecurringTransactionRule]?
     
     init(
         name: String,
@@ -67,9 +70,9 @@ final class Category {
 
 @Model
 final class Transaction {
-    var amount: Decimal
-    var currencyCode: String
-    var date: Date
+    var amount: Decimal = 0
+    var currencyCode: String = "USD"
+    var date: Date = Date()
     var note: String?
     var type: TransactionType?
     var walletNameSnapshot: String?
@@ -84,13 +87,10 @@ final class Transaction {
     @Attribute(.externalStorage)
     var photoData: Data?
     
-    @Relationship(deleteRule: .nullify)
     var category: Category?
     
-    @Relationship(deleteRule: .nullify)
     var wallet: Wallet?
     
-    @Relationship(deleteRule: .nullify)
     var transferWallet: Wallet?
     
     init(
@@ -134,9 +134,9 @@ final class Transaction {
 
 @Model
 final class Asset {
-    var symbol: String
-    var name: String
-    var kind: AssetKind
+    var symbol: String = ""
+    var name: String = ""
+    var kind: AssetKind = AssetKind.fiat
     
     init(symbol: String, name: String, kind: AssetKind) {
         self.symbol = symbol
@@ -147,15 +147,24 @@ final class Asset {
 
 @Model
 final class Wallet {
-    var name: String
-    var assetCode: String
-    var kind: AssetKind
-    var balance: Decimal
+    var name: String = ""
+    var assetCode: String = "USD"
+    var kind: AssetKind = AssetKind.fiat
+    var balance: Decimal = 0
     var colorHex: String?
-    var createdAt: Date
-    var updatedAt: Date
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
     
     var folder: WalletFolder?
+
+    @Relationship(deleteRule: .nullify, inverse: \Transaction.wallet)
+    var transactions: [Transaction]?
+
+    @Relationship(deleteRule: .nullify, inverse: \Transaction.transferWallet)
+    var transferTransactions: [Transaction]?
+
+    @Relationship(deleteRule: .nullify, inverse: \RecurringTransactionRule.wallet)
+    var recurringRules: [RecurringTransactionRule]?
     
     init(
         name: String,
@@ -178,9 +187,11 @@ final class Wallet {
 
 @Model
 final class WalletFolder {
-    var name: String
-    var createdAt: Date
-    var wallets: [Wallet] = []
+    var name: String = ""
+    var createdAt: Date = Date()
+
+    @Relationship(deleteRule: .nullify, inverse: \Wallet.folder)
+    var wallets: [Wallet]?
     
     init(name: String, createdAt: Date = Date()) {
         self.name = name
@@ -190,22 +201,20 @@ final class WalletFolder {
 
 @Model
 final class RecurringTransactionRule {
-    var title: String
-    var amount: Decimal
-    var currencyCode: String
-    var type: TransactionType
-    var frequency: RecurrenceFrequency
-    var interval: Int
-    var nextRunDate: Date
+    var title: String = ""
+    var amount: Decimal = 0
+    var currencyCode: String = "USD"
+    var type: TransactionType = TransactionType.expense
+    var frequency: RecurrenceFrequency = RecurrenceFrequency.monthly
+    var interval: Int = 1
+    var nextRunDate: Date = Date()
     var note: String?
-    var isActive: Bool
-    var createdAt: Date
-    var updatedAt: Date
+    var isActive: Bool = true
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
-    @Relationship(deleteRule: .nullify)
     var category: Category?
 
-    @Relationship(deleteRule: .nullify)
     var wallet: Wallet?
 
     init(
@@ -241,12 +250,12 @@ final class RecurringTransactionRule {
 
 @Model
 final class CategoryBudget {
-    var amount: Decimal
-    var currencyCode: String
-    var period: BudgetPeriod
-    var isActive: Bool
-    var createdAt: Date
-    var updatedAt: Date
+    var amount: Decimal = 0
+    var currencyCode: String = "USD"
+    var period: BudgetPeriod = BudgetPeriod.monthly
+    var isActive: Bool = true
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     @Relationship(deleteRule: .nullify)
     var category: Category?

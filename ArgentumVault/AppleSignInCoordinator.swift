@@ -11,10 +11,20 @@ import AppKit
 
 @MainActor
 final class AppleSignInCoordinator: NSObject {
+    private static var isAuthorizationInProgress = false
+    private static var lastStartTimestamp: TimeInterval = 0
+    private static let minimumStartInterval: TimeInterval = 1.2
+
     private var completion: ((Result<ASAuthorization, Error>) -> Void)?
 
     func start(completion: @escaping (Result<ASAuthorization, Error>) -> Void) {
+        let now = Date().timeIntervalSince1970
+        guard !Self.isAuthorizationInProgress else { return }
+        guard now - Self.lastStartTimestamp >= Self.minimumStartInterval else { return }
         guard self.completion == nil else { return }
+
+        Self.isAuthorizationInProgress = true
+        Self.lastStartTimestamp = now
         self.completion = completion
 
         let request = ASAuthorizationAppleIDProvider().createRequest()
@@ -33,12 +43,14 @@ extension AppleSignInCoordinator: ASAuthorizationControllerDelegate {
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         let handler = completion
         completion = nil
+        Self.isAuthorizationInProgress = false
         handler?(.success(authorization))
     }
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         let handler = completion
         completion = nil
+        Self.isAuthorizationInProgress = false
         handler?(.failure(error))
     }
 }

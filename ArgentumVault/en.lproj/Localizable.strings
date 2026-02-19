@@ -161,7 +161,7 @@
 "settings.account.connected" = "Connected with Apple ID";
 "settings.account.sign_out" = "Sign out";
 "settings.account.sync_hint_pro" = "Pro: data syncs and backs up via iCloud (CloudKit).";
-"settings.account.sync_hint_free" = "Free: data stays only on this device, without iCloud sync/backup.";
+"settings.account.sync_hint_free" = "Free: core features are available; iCloud backup works when CloudKit is available.";
 "settings.account.authorizing" = "Authorizing Apple ID...";
 "settings.account.simulator_hint" = "In Simulator, sign in to Apple ID in Settings first, or use a real device.";
 "settings.account.error_title" = "Sign in error";

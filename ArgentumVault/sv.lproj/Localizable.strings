@@ -164,7 +164,7 @@
 "pro.ai.daily_tip.over_generic" = "For att na dagens mal, spendera cirka %@ mindre.";
 "pro.ai.daily_tip.on_track" = "Du ligger i fas. Du kan fortfarande spara cirka %@ idag.";
 "settings.account.sync_hint_pro" = "Pro: data synkas och sakerhetskopieras via iCloud (CloudKit).";
-"settings.account.sync_hint_free" = "Free: data lagras endast pa den har enheten, utan iCloud-synk/backup.";
+"settings.account.sync_hint_free" = "Free: basfunktioner ar tillgangliga, och iCloud-backup fungerar nar CloudKit ar tillgangligt.";
 "pro.subtitle" = "Las upp iCloud Sync & Backup, avancerad analys, AI-insikter och inga annonser.";
 "pro.upsell.short" = "Uppgradera till Pro: iCloud Sync & Backup, synk mellan enheter, djupare analys och inga annonser.";
 "pro.feature.icloud_sync_backup" = "iCloud Sync & Backup mellan enheter";

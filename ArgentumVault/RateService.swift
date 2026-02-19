@@ -1,6 +1,11 @@
 import Foundation
 import Combine
 
+struct WalletRateSnapshot: Sendable {
+    let assetCode: String
+    let kind: AssetKind
+}
+
 struct FXRatesSnapshot: Codable {
     let base: String
     let date: String
@@ -98,7 +103,7 @@ final class RateService: ObservableObject {
         }
     }
     
-    func refreshAssetPrices(wallets: [Wallet]) async {
+    func refreshAssetPrices(wallets: [WalletRateSnapshot]) async {
         var cryptoSymbols: Set<String> = []
         var metalSymbols: Set<String> = []
         var stockSymbols: Set<String> = []
@@ -192,7 +197,7 @@ final class RateService: ObservableObject {
         saveCache()
     }
     
-    func refreshAllRates(base: String, wallets: [Wallet], force: Bool) async {
+    func refreshAllRates(base: String, wallets: [WalletRateSnapshot], force: Bool) async {
         if shouldRefreshFX(base: base, force: force) {
             await refreshFX(base: base)
         }
