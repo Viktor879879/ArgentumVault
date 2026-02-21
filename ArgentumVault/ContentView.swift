@@ -526,7 +526,6 @@ struct FirstLaunchSetupView: View {
                 appleUserName = fullName
             }
             SessionEvents.postAccountSessionDidChange()
-            syncBackupImmediately(accountIdentifier: "apple:\(credential.user)")
             triggerProRestoreAfterAuthorization()
             if let accountID = SetupProfileStore.appleAccountID(credential.user),
                restoreSetupProfileIfPresent(for: accountID) {
@@ -549,32 +548,12 @@ struct FirstLaunchSetupView: View {
         emailUserEmail = email
         authMethod = "email"
         SessionEvents.postAccountSessionDidChange()
-        syncBackupImmediately(accountIdentifier: "email:\(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())")
         triggerProRestoreAfterAuthorization()
         if let accountID = SetupProfileStore.emailAccountID(email),
            restoreSetupProfileIfPresent(for: accountID) {
             return
         }
         proceedAfterAuth()
-    }
-
-    private func syncBackupImmediately(accountIdentifier: String) {
-        Task { @MainActor in
-            let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                modelContext: modelContext,
-                accountIdentifier: accountIdentifier
-            )) ?? false
-            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
-                modelContext: modelContext,
-                didRestore: didRestore
-            ) {
-                ICloudBackupManager.backupIfNeeded(
-                    modelContext: modelContext,
-                    accountIdentifier: accountIdentifier,
-                    force: true
-                )
-            }
-        }
     }
 
     private func openEmailAuth(mode: EmailAuthMode) {
@@ -4751,7 +4730,6 @@ struct SettingsView: View {
                 appleUserName = fullName
             }
             SessionEvents.postAccountSessionDidChange()
-            syncBackupImmediately(accountIdentifier: "apple:\(credential.user)")
             triggerProRestoreAfterAuthorization()
             persistSetupProfileIfPossible()
 #if DEBUG
@@ -4803,31 +4781,11 @@ struct SettingsView: View {
         emailUserEmail = email
         authMethod = "email"
         SessionEvents.postAccountSessionDidChange()
-        syncBackupImmediately(accountIdentifier: "email:\(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())")
         triggerProRestoreAfterAuthorization()
         persistSetupProfileIfPossible()
 #if DEBUG
         refreshCloudDebugStatus()
 #endif
-    }
-
-    private func syncBackupImmediately(accountIdentifier: String) {
-        Task { @MainActor in
-            let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                modelContext: modelContext,
-                accountIdentifier: accountIdentifier
-            )) ?? false
-            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
-                modelContext: modelContext,
-                didRestore: didRestore
-            ) {
-                ICloudBackupManager.backupIfNeeded(
-                    modelContext: modelContext,
-                    accountIdentifier: accountIdentifier,
-                    force: true
-                )
-            }
-        }
     }
 
     private func triggerProRestoreAfterAuthorization() {
@@ -5372,6 +5330,12 @@ private enum EmailAuthMode: String, CaseIterable, Identifiable {
 }
 
 private struct EmailAuthSheetView: View {
+    private enum AuthField: Hashable {
+        case email
+        case password
+        case confirmPassword
+    }
+
     let lang: String
     let showsModePicker: Bool
     let onSuccess: (String) -> Void
@@ -5384,6 +5348,7 @@ private struct EmailAuthSheetView: View {
     @State private var isSubmitting = false
     @State private var showError = false
     @State private var errorMessage = ""
+    @FocusState private var focusedField: AuthField?
 
     init(
         lang: String,
@@ -5416,12 +5381,40 @@ private struct EmailAuthSheetView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.emailAddress)
+                        .textContentType(.emailAddress)
+                        .focused($focusedField, equals: .email)
+                        .submitLabel(.next)
+                        .onSubmit {
+                            focusedField = .password
+                        }
                 }
 
                 Section(L10n.text("settings.account.password", lang: lang)) {
                     SecureField(L10n.text("settings.account.password", lang: lang), text: $password)
+                        .id("email-auth-password")
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .textContentType(mode == .signUp ? .newPassword : .password)
+                        .focused($focusedField, equals: .password)
+                        .submitLabel(mode == .signUp ? .next : .done)
+                        .onSubmit {
+                            if mode == .signUp {
+                                focusedField = .confirmPassword
+                            } else {
+                                focusedField = nil
+                            }
+                        }
                     if mode == .signUp {
                         SecureField(L10n.text("settings.account.confirm_password", lang: lang), text: $confirmPassword)
+                            .id("email-auth-confirm-password")
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .textContentType(.newPassword)
+                            .focused($focusedField, equals: .confirmPassword)
+                            .submitLabel(.done)
+                            .onSubmit {
+                                focusedField = nil
+                            }
                     }
                 }
 
@@ -5443,7 +5436,6 @@ private struct EmailAuthSheetView: View {
                 }
             }
         }
-        .dismissKeyboardOnTap()
         .keyboardDismissBehavior()
         .alert(
             L10n.text("settings.account.error_title", lang: lang),
@@ -5605,7 +5597,7 @@ private enum SetupProfileStore {
 
 private enum EmailAuthManager {
     private static let service = "com.argentumvault.app.emailauth"
-    private static let account = "primary"
+    private static let legacyPrimaryAccount = "primary"
 
     static func authenticate(
         mode: EmailAuthMode,
@@ -5628,7 +5620,9 @@ private enum EmailAuthManager {
             throw EmailAuthError.passwordMismatch
         }
 
-        if try loadCredentials() != nil {
+        try migrateLegacyPrimaryCredentialsIfNeeded()
+
+        if try loadCredentials(for: normalizedEmail) != nil {
             throw EmailAuthError.accountAlreadyExists
         }
 
@@ -5639,18 +5633,16 @@ private enum EmailAuthManager {
             saltBase64: salt.base64EncodedString(),
             hashBase64: hash.base64EncodedString()
         )
-        try saveCredentials(credentials)
+        try saveCredentials(credentials, for: normalizedEmail)
         return normalizedEmail
     }
 
     private static func signIn(email: String, password: String) throws -> String {
         let normalizedEmail = try normalized(email: email)
-        guard let credentials = try loadCredentials() else {
-            throw EmailAuthError.accountNotFound
-        }
+        try migrateLegacyPrimaryCredentialsIfNeeded()
 
-        guard credentials.email == normalizedEmail else {
-            throw EmailAuthError.invalidCredentials
+        guard let credentials = try loadCredentials(for: normalizedEmail) else {
+            throw EmailAuthError.accountNotFound
         }
 
         guard let salt = Data(base64Encoded: credentials.saltBase64),
@@ -5695,7 +5687,35 @@ private enum EmailAuthManager {
         return Data(bytes)
     }
 
-    private static func loadCredentials() throws -> StoredEmailCredentials? {
+    private static func migrateLegacyPrimaryCredentialsIfNeeded() throws {
+        guard let legacy = try loadLegacyPrimaryCredentials() else { return }
+        if try loadCredentials(for: legacy.email) == nil {
+            try saveCredentials(legacy, for: legacy.email)
+        }
+        try deleteLegacyPrimaryCredentials()
+    }
+
+    private static func loadLegacyPrimaryCredentials() throws -> StoredEmailCredentials? {
+        try loadCredentials(forKeychainAccount: legacyPrimaryAccount)
+    }
+
+    private static func deleteLegacyPrimaryCredentials() throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: legacyPrimaryAccount
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw EmailAuthError.storageFailure
+        }
+    }
+
+    private static func loadCredentials(for email: String) throws -> StoredEmailCredentials? {
+        try loadCredentials(forKeychainAccount: email)
+    }
+
+    private static func loadCredentials(forKeychainAccount account: String) throws -> StoredEmailCredentials? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -5719,7 +5739,7 @@ private enum EmailAuthManager {
         }
     }
 
-    private static func saveCredentials(_ credentials: StoredEmailCredentials) throws {
+    private static func saveCredentials(_ credentials: StoredEmailCredentials, for keychainAccount: String) throws {
         let data: Data
         do {
             data = try JSONEncoder().encode(credentials)
@@ -5730,7 +5750,7 @@ private enum EmailAuthManager {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: keychainAccount
         ]
         let updateAttributes: [String: Any] = [
             kSecValueData as String: data,

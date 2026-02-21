@@ -12,7 +12,7 @@
 	<string>development</string>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>iCloud.com.argentumvault.app</string>
+		<string>iCloud.com.argentumvault.app.x9w248m88b.vp20260219</string>
 	</array>
 	<key>com.apple.developer.icloud-services</key>
 	<array>
@@ -21,7 +21,7 @@
 	</array>
 	<key>com.apple.developer.ubiquity-container-identifiers</key>
 	<array>
-		<string>iCloud.com.argentumvault.app</string>
+		<string>iCloud.com.argentumvault.app.x9w248m88b.vp20260219</string>
 	</array>
 </dict>
 </plist>

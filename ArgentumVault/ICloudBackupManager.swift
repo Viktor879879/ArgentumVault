@@ -5,6 +5,12 @@ import CloudKit
 
 @MainActor
 enum ICloudBackupManager {
+    private struct PendingCloudUpload {
+        let payload: Data
+        let payloadHash: String
+        let force: Bool
+    }
+
     struct SnapshotDebugStatus {
         let accountBucket: String
         let storageMode: String
@@ -20,8 +26,8 @@ enum ICloudBackupManager {
     static let periodicIntervalNanoseconds: UInt64 = 900_000_000_000 // 15 minutes
 
     private static let schemaVersion = 1
-    private static let ubiquityContainerIdentifier = "iCloud.com.argentumvault.app"
-    private static let cloudKitContainerIdentifier = "iCloud.com.argentumvault.app"
+    private static let ubiquityContainerIdentifier = "iCloud.com.argentumvault.app.x9w248m88b.vp20260219"
+    private static let cloudKitContainerIdentifier = "iCloud.com.argentumvault.app.x9w248m88b.vp20260219"
     private static let cloudSnapshotRecordType = "AVBackupSnapshot"
     private static let cloudPayloadAssetField = "payloadAsset"
     private static let cloudPayloadHashField = "payloadHash"
@@ -39,6 +45,8 @@ enum ICloudBackupManager {
     private static let storageCloudKitErrorKey = "storage.cloudkit.last_error"
     private static let storageCloudKitReasonKey = "storage.cloudkit.last_reason_code"
     private static let minimumAttemptInterval: TimeInterval = 5
+    private static var cloudUploadTasks: [String: Task<Void, Never>] = [:]
+    private static var pendingCloudUploads: [String: PendingCloudUpload] = [:]
 
     static func backupIfNeeded(modelContext: ModelContext, accountIdentifier: String, force: Bool = false) {
         let backupURL = backupFileURL(for: accountIdentifier)
@@ -90,7 +98,7 @@ enum ICloudBackupManager {
 
     @discardableResult
     static func restoreIfNeeded(modelContext: ModelContext, accountIdentifier: String) async throws -> Bool {
-        guard try !hasCoreFinancialData(in: modelContext) else { return false }
+        guard !hasCoreFinancialData(in: modelContext) else { return false }
         let bucket = accountBucket(accountIdentifier)
 
         let payload: Data
@@ -121,8 +129,8 @@ enum ICloudBackupManager {
         modelContext: ModelContext,
         didRestore: Bool
     ) -> Bool {
-        if didRestore { return true }
-        return (try? hasCoreFinancialData(in: modelContext)) == true
+        _ = modelContext
+        return didRestore
     }
 
     static func debugStatus(accountIdentifier: String) -> SnapshotDebugStatus {
@@ -206,9 +214,33 @@ enum ICloudBackupManager {
         let storageErrorKey = storageCloudKitErrorKey
         let storageReasonKey = storageCloudKitReasonKey
 
-        Task.detached(priority: .utility) {
+        if cloudUploadTasks[bucket] != nil {
+            pendingCloudUploads[bucket] = PendingCloudUpload(
+                payload: payload,
+                payloadHash: payloadHash,
+                force: force
+            )
+            return
+        }
+
+        cloudUploadTasks[bucket] = Task.detached(priority: .utility) {
+            defer {
+                Task { @MainActor in
+                    cloudUploadTasks[bucket] = nil
+                    if let pending = pendingCloudUploads.removeValue(forKey: bucket) {
+                        uploadSnapshotToCloudKit(
+                            payload: pending.payload,
+                            payloadHash: pending.payloadHash,
+                            bucket: bucket,
+                            force: pending.force
+                        )
+                    }
+                }
+            }
+            guard !Task.isCancelled else { return }
             do {
                 try await saveSnapshotPayloadToCloudKit(payload: payload, payloadHash: payloadHash, bucket: bucket)
+                guard !Task.isCancelled else { return }
                 let defaults = UserDefaults.standard
                 defaults.set(payloadHash, forKey: lastCloudHashKey)
                 defaults.set(Date().timeIntervalSince1970, forKey: cloudSuccessKey)
@@ -233,22 +265,40 @@ enum ICloudBackupManager {
         let container = CKContainer(identifier: cloudKitContainerIdentifier)
         let database = container.privateCloudDatabase
         let recordID = CKRecord.ID(recordName: "snapshot-\(bucket)")
-        let record = try await fetchOrCreateRecord(
-            in: database,
-            recordID: recordID
-        )
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("snapshot-\(UUID().uuidString).json", isDirectory: false)
         try payload.write(to: tempURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        record[cloudPayloadHashField] = payloadHash as CKRecordValue
-        record[cloudUpdatedAtField] = Date() as CKRecordValue
-        record[cloudSchemaVersionField] = NSNumber(value: schemaVersion)
-        record[cloudPayloadAssetField] = CKAsset(fileURL: tempURL)
-
-        _ = try await saveRecord(record, in: database)
+        for attempt in 0..<3 {
+            do {
+                let record = try await fetchOrCreateRecord(
+                    in: database,
+                    recordID: recordID
+                )
+                applySnapshotFields(
+                    to: record,
+                    payloadHash: payloadHash,
+                    tempURL: tempURL
+                )
+                _ = try await saveRecord(record, in: database)
+                return
+            } catch let ckError as CKError where ckError.code == .serverRecordChanged {
+                if let serverRecord = ckError.serverRecord {
+                    applySnapshotFields(
+                        to: serverRecord,
+                        payloadHash: payloadHash,
+                        tempURL: tempURL
+                    )
+                    _ = try await saveRecord(serverRecord, in: database)
+                    return
+                }
+                if attempt == 2 { throw ckError }
+            } catch {
+                if attempt == 2 { throw error }
+            }
+        }
     }
 
     private static func fetchSnapshotPayloadFromCloudKit(bucket: String) async throws -> Data? {
@@ -285,6 +335,17 @@ enum ICloudBackupManager {
         return CKRecord(recordType: cloudSnapshotRecordType, recordID: recordID)
     }
 
+    private static func applySnapshotFields(
+        to record: CKRecord,
+        payloadHash: String,
+        tempURL: URL
+    ) {
+        record[cloudPayloadHashField] = payloadHash as CKRecordValue
+        record[cloudUpdatedAtField] = Date() as CKRecordValue
+        record[cloudSchemaVersionField] = NSNumber(value: schemaVersion)
+        record[cloudPayloadAssetField] = CKAsset(fileURL: tempURL)
+    }
+
     private static func fetchRecord(
         with recordID: CKRecord.ID,
         in database: CKDatabase
@@ -309,17 +370,22 @@ enum ICloudBackupManager {
         in database: CKDatabase
     ) async throws -> CKRecord {
         try await withCheckedThrowingContinuation { continuation in
-            database.save(record) { savedRecord, error in
+            let operation = CKModifyRecordsOperation(
+                recordsToSave: [record],
+                recordIDsToDelete: nil
+            )
+            operation.savePolicy = .changedKeys
+            operation.isAtomic = true
+            operation.modifyRecordsCompletionBlock = { savedRecords, _, error in
                 if let error {
                     continuation.resume(throwing: error)
-                    return
-                }
-                if let savedRecord {
+                } else if let savedRecord = savedRecords?.first {
                     continuation.resume(returning: savedRecord)
-                    return
+                } else {
+                    continuation.resume(throwing: CKError(.internalError))
                 }
-                continuation.resume(throwing: CKError(.internalError))
             }
+            database.add(operation)
         }
     }
 
@@ -612,13 +678,39 @@ enum ICloudBackupManager {
         }
     }
 
-    private static func hasCoreFinancialData(in context: ModelContext) throws -> Bool {
-        if !(try context.fetch(FetchDescriptor<Wallet>())).isEmpty { return true }
-        if !(try context.fetch(FetchDescriptor<Transaction>())).isEmpty { return true }
-        if !(try context.fetch(FetchDescriptor<RecurringTransactionRule>())).isEmpty { return true }
-        if !(try context.fetch(FetchDescriptor<CategoryBudget>())).isEmpty { return true }
-        if !(try context.fetch(FetchDescriptor<WalletFolder>())).isEmpty { return true }
+    private static func hasCoreFinancialData(in context: ModelContext) -> Bool {
+        guard let wallets = safeFetch(FetchDescriptor<Wallet>(), in: context) else { return true }
+        if !wallets.isEmpty { return true }
+
+        guard let transactions = safeFetch(FetchDescriptor<Transaction>(), in: context) else { return true }
+        if !transactions.isEmpty { return true }
+
+        guard let recurringRules = safeFetch(FetchDescriptor<RecurringTransactionRule>(), in: context) else { return true }
+        if !recurringRules.isEmpty { return true }
+
+        guard let budgets = safeFetch(FetchDescriptor<CategoryBudget>(), in: context) else { return true }
+        if !budgets.isEmpty { return true }
+
+        guard let folders = safeFetch(FetchDescriptor<WalletFolder>(), in: context) else { return true }
+        if !folders.isEmpty { return true }
+
         return false
+    }
+
+    private static func safeFetch<Model: PersistentModel>(
+        _ descriptor: FetchDescriptor<Model>,
+        in context: ModelContext
+    ) -> [Model]? {
+        do {
+            return try context.fetch(descriptor)
+        } catch {
+            let description = String(describing: error)
+            let defaults = UserDefaults.standard
+            defaults.set(description, forKey: storageCloudKitErrorKey)
+            defaults.set("model_issue", forKey: storageCloudKitReasonKey)
+            defaults.set(description, forKey: lastErrorDefaultsKey)
+            return nil
+        }
     }
 
     private static func clearAllData(in context: ModelContext) throws {

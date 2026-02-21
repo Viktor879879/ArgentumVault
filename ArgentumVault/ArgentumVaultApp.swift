@@ -8,6 +8,7 @@
 import SwiftUI
 import SwiftData
 import CloudKit
+import CryptoKit
 
 @main
 struct ArgentumVaultApp: App {
@@ -35,6 +36,7 @@ private struct AppBootstrapView: View {
     @State private var pendingReconfigureNeedsEntitlementRefresh = false
     @State private var containerEpoch = 0
     @State private var lastKnownAccountIdentifier: String?
+    @State private var activeStoreAccountIdentifier: String?
 
     var body: some View {
         Group {
@@ -89,6 +91,24 @@ private struct AppBootstrapView: View {
     private func bootstrapIfNeeded() async {
         guard modelContainer == nil else { return }
         await switchContainerIfNeeded(refreshEntitlements: true)
+        guard modelContainer == nil else { return }
+
+        // Emergency fallback: never leave bootstrap screen hanging.
+        let accountIdentifier = StorageModePolicy.currentAccountIdentifier()
+        let fallbackSelection = AppModelContainerFactory.makeContainerSelection(
+            shouldUseCloudKit: false,
+            accountIdentifier: accountIdentifier
+        )
+        modelContainer = fallbackSelection.container
+        isCloudStoreEnabled = false
+        activeStoreAccountIdentifier = accountIdentifier
+        isSwitchingContainer = false
+        AppStorageDiagnostics.persist(requestedCloud: false, selection: fallbackSelection)
+        configureICloudBackupPipeline(
+            requestedCloud: false,
+            usesCloudKit: false,
+            container: fallbackSelection.container
+        )
     }
 
     @MainActor
@@ -100,6 +120,8 @@ private struct AppBootstrapView: View {
         }
         isReconfiguringContainer = true
         defer {
+            // Defensive reset to avoid getting stuck on bootstrap loading screen.
+            isSwitchingContainer = false
             isReconfiguringContainer = false
             if hasPendingReconfigureRequest {
                 let needsRefresh = pendingReconfigureNeedsEntitlementRefresh
@@ -117,11 +139,17 @@ private struct AppBootstrapView: View {
                 _ = await SubscriptionManager.resolveProAccessForLaunch()
             }
         }
-        let resolvedShouldUseCloudKit = StorageModePolicy.shouldRequestCloudKitStorage()
+        // Main SwiftData store is always local and account-scoped.
+        // CloudKit is used only by backup/restore pipeline to keep app accounts isolated.
+        let resolvedShouldUseCloudKit = false
+        let resolvedShouldEnableCloudBackup = StorageModePolicy.shouldRequestCloudKitStorage()
+        let resolvedAccountIdentifier = StorageModePolicy.currentAccountIdentifier()
 
-        if let existingContainer = modelContainer, resolvedShouldUseCloudKit == isCloudStoreEnabled {
+        if let existingContainer = modelContainer,
+           resolvedShouldUseCloudKit == isCloudStoreEnabled,
+           resolvedAccountIdentifier == activeStoreAccountIdentifier {
             configureICloudBackupPipeline(
-                requestedCloud: resolvedShouldUseCloudKit,
+                requestedCloud: resolvedShouldEnableCloudBackup,
                 usesCloudKit: isCloudStoreEnabled,
                 container: existingContainer
             )
@@ -132,52 +160,20 @@ private struct AppBootstrapView: View {
         let previousUsesCloudStore = isCloudStoreEnabled
         let previousContainerIdentifier = previousContainer.map(ObjectIdentifier.init)
 
-        let selection: AppModelContainerSelection
-        let shouldUseLocalBootstrapFirst = previousContainer == nil && resolvedShouldUseCloudKit
-        if shouldUseLocalBootstrapFirst {
-            let localSelection = AppModelContainerFactory.makeContainerSelection(shouldUseCloudKit: false)
-            selection = AppModelContainerSelection(
-                container: localSelection.container,
-                usesCloudKit: false,
-                cloudKitErrorDescription: nil,
-                cloudKitFailureReasonCode: "bootstrap_local_first"
-            )
-        } else {
-            let cloudKitPreflightResult = resolvedShouldUseCloudKit ? await CloudKitPreflight.evaluate() : nil
-            if resolvedShouldUseCloudKit,
-               let cloudKitPreflightResult,
-               !cloudKitPreflightResult.canUseCloudKit {
-                let localSelection = AppModelContainerFactory.makeContainerSelection(shouldUseCloudKit: false)
-                selection = AppModelContainerSelection(
-                    container: localSelection.container,
-                    usesCloudKit: false,
-                    cloudKitErrorDescription: nil,
-                    cloudKitFailureReasonCode: cloudKitPreflightResult.reasonCode ?? "generic"
-                )
-            } else {
-                let initialSelection = AppModelContainerFactory.makeContainerSelection(shouldUseCloudKit: resolvedShouldUseCloudKit)
-                if resolvedShouldUseCloudKit, !initialSelection.usesCloudKit {
-                    selection = AppModelContainerSelection(
-                        container: initialSelection.container,
-                        usesCloudKit: false,
-                        cloudKitErrorDescription: initialSelection.cloudKitErrorDescription,
-                        cloudKitFailureReasonCode: cloudKitPreflightResult?.reasonCode
-                            ?? initialSelection.cloudKitFailureReasonCode
-                            ?? "generic"
-                    )
-                } else {
-                    selection = initialSelection
-                }
-            }
-        }
+        let selection = AppModelContainerFactory.makeContainerSelection(
+            shouldUseCloudKit: false,
+            accountIdentifier: resolvedAccountIdentifier
+        )
 
-        if let previousContainer, selection.usesCloudKit == previousUsesCloudStore {
+        if let previousContainer,
+           selection.usesCloudKit == previousUsesCloudStore,
+           resolvedAccountIdentifier == activeStoreAccountIdentifier {
             // Avoid container churn while CloudKit remains unavailable (or unchanged).
             // Recreating identical mode containers can invalidate live model objects and crash SwiftData views.
             AppStorageDiagnostics.persist(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
             scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
             configureICloudBackupPipeline(
-                requestedCloud: resolvedShouldUseCloudKit,
+                requestedCloud: resolvedShouldEnableCloudBackup,
                 usesCloudKit: previousUsesCloudStore,
                 container: previousContainer
             )
@@ -185,7 +181,10 @@ private struct AppBootstrapView: View {
         }
 
         let shouldSwitchStoreType = previousContainer != nil
-            && selection.usesCloudKit != previousUsesCloudStore
+            && (
+                selection.usesCloudKit != previousUsesCloudStore
+                || resolvedAccountIdentifier != activeStoreAccountIdentifier
+            )
 
         if shouldSwitchStoreType {
             periodicBackupTask?.cancel()
@@ -208,34 +207,13 @@ private struct AppBootstrapView: View {
             await Task.yield()
         }
 
-        if selection.usesCloudKit {
-            if let previousContainer, !previousUsesCloudStore {
-                try? DataStoreMigrator.migrateLocalSnapshotToCloudIfNeeded(
-                    from: previousContainer,
-                    to: selection.container
-                )
-            } else if previousContainer == nil {
-                if let currentLocalContainer = try? AppModelContainerFactory.makeCurrentLocalContainerForMigration() {
-                    try? DataStoreMigrator.migrateLocalSnapshotToCloudIfNeeded(
-                        from: currentLocalContainer,
-                        to: selection.container
-                    )
-                }
-                if let legacyLocalContainer = try? AppModelContainerFactory.makeLegacyLocalContainerForMigration() {
-                    try? DataStoreMigrator.migrateLocalSnapshotToCloudIfNeeded(
-                        from: legacyLocalContainer,
-                        to: selection.container
-                    )
-                }
-            }
-        }
-
         modelContainer = selection.container
         isCloudStoreEnabled = selection.usesCloudKit
+        activeStoreAccountIdentifier = resolvedAccountIdentifier
         AppStorageDiagnostics.persist(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
         scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
         configureICloudBackupPipeline(
-            requestedCloud: resolvedShouldUseCloudKit,
+            requestedCloud: resolvedShouldEnableCloudBackup,
             usesCloudKit: selection.usesCloudKit,
             container: selection.container
         )
@@ -243,7 +221,6 @@ private struct AppBootstrapView: View {
         if previousContainerIdentifier != ObjectIdentifier(selection.container) {
             containerEpoch += 1
         }
-        isSwitchingContainer = false
     }
 
     @MainActor
@@ -283,16 +260,25 @@ private struct AppBootstrapView: View {
             let startupDelay: UInt64 = usesCloudKit ? 10_000_000_000 : 350_000_000
             try? await Task.sleep(nanoseconds: startupDelay)
             guard !Task.isCancelled else { return }
+            guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
+                return
+            }
+
+            let restoreContext = ModelContext(container)
             let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                modelContext: container.mainContext,
+                modelContext: restoreContext,
                 accountIdentifier: accountIdentifier
             )) ?? false
-            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
-                modelContext: container.mainContext,
-                didRestore: didRestore
-            ) {
+
+            guard !Task.isCancelled else { return }
+            guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
+                return
+            }
+
+            if didRestore {
+                let backupContext = ModelContext(container)
                 ICloudBackupManager.backupIfNeeded(
-                    modelContext: container.mainContext,
+                    modelContext: backupContext,
                     accountIdentifier: accountIdentifier,
                     force: true
                 )
@@ -306,8 +292,15 @@ private struct AppBootstrapView: View {
                 guard let latestAccountIdentifier = StorageModePolicy.currentAccountIdentifier() else {
                     continue
                 }
+                guard isBackupPipelineContextCurrent(
+                    container: container,
+                    accountIdentifier: latestAccountIdentifier
+                ) else {
+                    continue
+                }
+                let backupContext = ModelContext(container)
                 ICloudBackupManager.backupIfNeeded(
-                    modelContext: container.mainContext,
+                    modelContext: backupContext,
                     accountIdentifier: latestAccountIdentifier
                 )
             }
@@ -339,11 +332,24 @@ private struct AppBootstrapView: View {
         guard let resolvedContainer else { return }
         let resolvedAccountIdentifier = accountIdentifier ?? StorageModePolicy.currentAccountIdentifier() ?? lastKnownAccountIdentifier
         guard let resolvedAccountIdentifier, !resolvedAccountIdentifier.isEmpty else { return }
+        let backupContext = ModelContext(resolvedContainer)
         ICloudBackupManager.backupIfNeeded(
-            modelContext: resolvedContainer.mainContext,
+            modelContext: backupContext,
             accountIdentifier: resolvedAccountIdentifier,
             force: force
         )
+    }
+
+    @MainActor
+    private func isBackupPipelineContextCurrent(
+        container: ModelContainer,
+        accountIdentifier: String
+    ) -> Bool {
+        guard !isSwitchingContainer else { return false }
+        guard let currentContainer = modelContainer else { return false }
+        guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
+        guard StorageModePolicy.currentAccountIdentifier() == accountIdentifier else { return false }
+        return true
     }
 }
 
@@ -353,7 +359,7 @@ private struct CloudKitPreflightResult {
 }
 
 private enum CloudKitPreflight {
-    private static let containerIdentifier = "iCloud.com.argentumvault.app"
+    private static let containerIdentifier = "iCloud.com.argentumvault.app.x9w248m88b.vp20260219"
 
     static func evaluate() async -> CloudKitPreflightResult {
         await withTaskGroup(of: CloudKitPreflightResult.self) { group in
@@ -453,9 +459,9 @@ private struct AppModelContainerSelection {
 }
 
 private enum AppModelContainerFactory {
-    private static let localStoreName = "ArgentumVaultLocalStore"
-    private static let cloudStoreName = "ArgentumVaultCloudStore"
-    private static let cloudContainerIdentifier = "iCloud.com.argentumvault.app"
+    private static let localStoreNamePrefix = "ArgentumVaultLocalStore"
+    private static let cloudStoreNamePrefix = "ArgentumVaultCloudStore"
+    private static let cloudContainerIdentifier = "iCloud.com.argentumvault.app.x9w248m88b.vp20260219"
     private static let schema = Schema([
         Category.self,
         Transaction.self,
@@ -466,9 +472,20 @@ private enum AppModelContainerFactory {
         CategoryBudget.self,
     ])
 
-    static func makeContainerSelection(shouldUseCloudKit: Bool) -> AppModelContainerSelection {
+    static func makeContainerSelection(
+        shouldUseCloudKit: Bool,
+        accountIdentifier: String?
+    ) -> AppModelContainerSelection {
+        let scopedLocalStoreName = scopedStoreName(
+            prefix: localStoreNamePrefix,
+            accountIdentifier: accountIdentifier
+        )
+        let scopedCloudStoreName = scopedStoreName(
+            prefix: cloudStoreNamePrefix,
+            accountIdentifier: accountIdentifier
+        )
         let preferredConfiguration = ModelConfiguration(
-            shouldUseCloudKit ? cloudStoreName : localStoreName,
+            shouldUseCloudKit ? scopedCloudStoreName : scopedLocalStoreName,
             schema: schema,
             isStoredInMemoryOnly: false,
             cloudKitDatabase: shouldUseCloudKit ? .private(cloudContainerIdentifier) : .none
@@ -504,7 +521,7 @@ private enum AppModelContainerFactory {
 
             // Keep app usable when CloudKit schema/capabilities are not ready yet.
             let localFallbackConfiguration = ModelConfiguration(
-                localStoreName,
+                scopedLocalStoreName,
                 schema: schema,
                 isStoredInMemoryOnly: false,
                 cloudKitDatabase: .none
@@ -541,9 +558,9 @@ private enum AppModelContainerFactory {
         }
     }
 
-    static func makeCurrentLocalContainerForMigration() throws -> ModelContainer {
+    static func makeCurrentLocalContainerForMigration(accountIdentifier: String?) throws -> ModelContainer {
         let configuration = ModelConfiguration(
-            localStoreName,
+            scopedStoreName(prefix: localStoreNamePrefix, accountIdentifier: accountIdentifier),
             schema: schema,
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .none
@@ -553,11 +570,22 @@ private enum AppModelContainerFactory {
 
     static func makeLegacyLocalContainerForMigration() throws -> ModelContainer {
         let configuration = ModelConfiguration(
+            localStoreNamePrefix,
             schema: schema,
             isStoredInMemoryOnly: false,
             cloudKitDatabase: .none
         )
         return try ModelContainer(for: schema, configurations: [configuration])
+    }
+
+    private static func scopedStoreName(prefix: String, accountIdentifier: String?) -> String {
+        "\(prefix)-\(accountBucket(accountIdentifier))"
+    }
+
+    private static func accountBucket(_ accountIdentifier: String?) -> String {
+        guard let accountIdentifier, !accountIdentifier.isEmpty else { return "guest" }
+        let digest = SHA256.hash(data: Data(accountIdentifier.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(24).lowercased()
     }
 }
 
