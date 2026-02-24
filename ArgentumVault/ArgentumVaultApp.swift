@@ -250,7 +250,7 @@ private struct AppBootstrapView: View {
         periodicBackupTask?.cancel()
         periodicBackupTask = nil
 
-        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentAccountIdentifier() else {
+        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
             lastKnownAccountIdentifier = nil
             return
         }
@@ -289,7 +289,7 @@ private struct AppBootstrapView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: ICloudBackupManager.periodicIntervalNanoseconds)
                 guard !Task.isCancelled else { break }
-                guard let latestAccountIdentifier = StorageModePolicy.currentAccountIdentifier() else {
+                guard let latestAccountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
                     continue
                 }
                 guard isBackupPipelineContextCurrent(
@@ -311,7 +311,7 @@ private struct AppBootstrapView: View {
     private func handleModelContextDidSave(_ notification: Notification) {
         guard notification.object is ModelContext else { return }
         guard modelContainer != nil else { return }
-        guard StorageModePolicy.currentAccountIdentifier() != nil else { return }
+        guard StorageModePolicy.currentCloudBackupAccountIdentifier() != nil else { return }
         guard !isSwitchingContainer else { return }
 
         saveTriggeredBackupTask?.cancel()
@@ -330,7 +330,9 @@ private struct AppBootstrapView: View {
     ) {
         let resolvedContainer = container ?? modelContainer
         guard let resolvedContainer else { return }
-        let resolvedAccountIdentifier = accountIdentifier ?? StorageModePolicy.currentAccountIdentifier() ?? lastKnownAccountIdentifier
+        let resolvedAccountIdentifier = accountIdentifier
+            ?? StorageModePolicy.currentCloudBackupAccountIdentifier()
+            ?? lastKnownAccountIdentifier
         guard let resolvedAccountIdentifier, !resolvedAccountIdentifier.isEmpty else { return }
         let backupContext = ModelContext(resolvedContainer)
         ICloudBackupManager.backupIfNeeded(
@@ -348,7 +350,7 @@ private struct AppBootstrapView: View {
         guard !isSwitchingContainer else { return false }
         guard let currentContainer = modelContainer else { return false }
         guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
-        guard StorageModePolicy.currentAccountIdentifier() == accountIdentifier else { return false }
+        guard StorageModePolicy.currentCloudBackupAccountIdentifier() == accountIdentifier else { return false }
         return true
     }
 }
@@ -871,24 +873,33 @@ private enum StorageModePolicy {
     private static let appleUserIDKey = "appleUserID"
     private static let emailUserEmailKey = "emailUserEmail"
 
-    static func currentAccountIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let appleUserID = defaults.string(forKey: appleUserIDKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !appleUserID.isEmpty {
-            return "apple:\(appleUserID)"
-        }
+    static func currentCloudBackupAccountIdentifier() -> String? {
+        currentAppleAccountIdentifier()
+    }
 
+    static func currentAppleAccountIdentifier() -> String? {
+        let defaults = UserDefaults.standard
+        let appleUserID = defaults.string(forKey: appleUserIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !appleUserID.isEmpty else { return nil }
+        return "apple:\(appleUserID)"
+    }
+
+    static func currentEmailAccountIdentifier() -> String? {
+        let defaults = UserDefaults.standard
         let emailUserEmail = defaults.string(forKey: emailUserEmailKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        if !emailUserEmail.isEmpty {
-            return "email:\(emailUserEmail)"
-        }
-        return nil
+        guard !emailUserEmail.isEmpty else { return nil }
+        return "email:\(emailUserEmail)"
+    }
+
+    static func currentAccountIdentifier() -> String? {
+        currentAppleAccountIdentifier() ?? currentEmailAccountIdentifier()
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {
-        // Cloud storage is tied to an authorized app session, not only to subscription status.
-        return currentAccountIdentifier() != nil
+        // Until backend email auth is introduced, cloud backup/sync is Apple-ID-only.
+        return currentCloudBackupAccountIdentifier() != nil
     }
 }

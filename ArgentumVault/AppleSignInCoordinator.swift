@@ -16,6 +16,7 @@ final class AppleSignInCoordinator: NSObject {
     private static let minimumStartInterval: TimeInterval = 1.2
 
     private var completion: ((Result<ASAuthorization, Error>) -> Void)?
+    private var activeController: ASAuthorizationController?
 
     func start(completion: @escaping (Result<ASAuthorization, Error>) -> Void) {
         let now = Date().timeIntervalSince1970
@@ -31,6 +32,7 @@ final class AppleSignInCoordinator: NSObject {
         request.requestedScopes = [.fullName, .email]
 
         let controller = ASAuthorizationController(authorizationRequests: [request])
+        activeController = controller
         controller.delegate = self
         controller.presentationContextProvider = self
         DispatchQueue.main.async {
@@ -43,6 +45,7 @@ extension AppleSignInCoordinator: ASAuthorizationControllerDelegate {
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         let handler = completion
         completion = nil
+        activeController = nil
         Self.isAuthorizationInProgress = false
         handler?(.success(authorization))
     }
@@ -50,6 +53,7 @@ extension AppleSignInCoordinator: ASAuthorizationControllerDelegate {
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         let handler = completion
         completion = nil
+        activeController = nil
         Self.isAuthorizationInProgress = false
         handler?(.failure(error))
     }
