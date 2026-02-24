@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ALPHA_VANTAGE_API_KEY</key>
+	<string>O5214G3ZJ5DH4REF</string>
+	<key>GADApplicationIdentifier</key>
+	<string>ca-app-pub-3581580891903061~6502530134</string>
+	<key>GADBannerAdUnitID</key>
+	<string>ca-app-pub-3581580891903061/4916219360</string>
+	<key>AdsHomeBottomBannerUnitID</key>
+	<string>ca-app-pub-3581580891903061/4916219360</string>
+	<key>AdsRemoteConfigURL</key>
+	<string></string>
+	<key>AdsRemoteConfigFetchIntervalSeconds</key>
+	<integer>3600</integer>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+</dict>
+</plist>
