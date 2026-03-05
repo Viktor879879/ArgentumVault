@@ -177,6 +177,7 @@
 "settings.account.error_email_exists" = "Email account already exists on this device.";
 "settings.account.error_email_not_found" = "No email account found. Create one first.";
 "settings.account.error_invalid_credentials" = "Invalid email or password.";
+"settings.account.error_email_not_confirmed" = "Confirm your email first, then sign in.";
 "settings.account.error_storage" = "Could not securely save account data.";
 "settings.recurring" = "Recurring transactions";
 "recurring.new" = "New recurring";

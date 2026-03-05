@@ -439,9 +439,13 @@ struct AlphaVantageProvider {
     }
     
     private func apiKey() throws -> String {
-        if let key = Bundle.main.object(forInfoDictionaryKey: "ALPHA_VANTAGE_API_KEY") as? String,
-           !key.isEmpty {
-            return key
+        if let raw = Bundle.main.object(forInfoDictionaryKey: "ALPHA_VANTAGE_API_KEY") as? String {
+            let key = raw
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            if !key.isEmpty {
+                return key
+            }
         }
         throw RateServiceError.missingAPIKey
     }

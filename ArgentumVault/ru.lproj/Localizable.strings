@@ -177,6 +177,7 @@
 "settings.account.error_email_exists" = "Email-аккаунт уже создан на этом устройстве.";
 "settings.account.error_email_not_found" = "Email-аккаунт не найден. Сначала зарегистрируйтесь.";
 "settings.account.error_invalid_credentials" = "Неверный email или пароль.";
+"settings.account.error_email_not_confirmed" = "Сначала подтвердите email, затем войдите.";
 "settings.account.error_storage" = "Не удалось безопасно сохранить данные аккаунта.";
 "settings.recurring" = "Регулярные транзакции";
 "recurring.new" = "Новая регулярная";

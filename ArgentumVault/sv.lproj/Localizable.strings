@@ -151,6 +151,7 @@
 "settings.account.error_email_exists" = "Email-konto finns redan pa den har enheten.";
 "settings.account.error_email_not_found" = "Inget email-konto hittades. Skapa ett forst.";
 "settings.account.error_invalid_credentials" = "Fel email eller losenord.";
+"settings.account.error_email_not_confirmed" = "Bekrafta din email forst och logga sedan in.";
 "settings.account.error_storage" = "Det gick inte att spara kontodata sakert.";
 "pro.ai.daily_tip.title" = "Dagens spartips";
 "pro.ai.daily_tip.hint" = "Baserat pa dina senaste utgifter, har ar fokus for idag.";

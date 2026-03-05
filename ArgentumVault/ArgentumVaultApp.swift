@@ -90,6 +90,16 @@ private struct AppBootstrapView: View {
     @MainActor
     private func bootstrapIfNeeded() async {
         guard modelContainer == nil else { return }
+
+        let normalizedEmail = bootstrapEmailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedEmail.isEmpty,
+           let restoredEmail = await EmailAuthManager.restoreSessionEmail() {
+            bootstrapEmailUserEmail = restoredEmail
+            bootstrapAuthMethod = "email"
+        } else if !normalizedEmail.isEmpty, bootstrapAuthMethod.isEmpty {
+            bootstrapAuthMethod = "email"
+        }
+
         await switchContainerIfNeeded(refreshEntitlements: true)
         guard modelContainer == nil else { return }
 

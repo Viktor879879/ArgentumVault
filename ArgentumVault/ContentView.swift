@@ -11,7 +11,6 @@ import PhotosUI
 import Charts
 import UniformTypeIdentifiers
 import AuthenticationServices
-import CryptoKit
 import Security
 
 #if canImport(UIKit)
@@ -4154,7 +4153,7 @@ struct SettingsView: View {
                                 .font(.subheadline)
                         }
                         Button(role: .destructive) {
-                            clearAccountSession()
+                            signOutCurrentAccount()
                         } label: {
                             Text(L10n.text("settings.account.sign_out", lang: uiLanguageCode))
                                 .foregroundStyle(.red)
@@ -4595,6 +4594,15 @@ struct SettingsView: View {
         emailUserEmail = ""
         authMethod = ""
         SessionEvents.postAccountSessionDidChange()
+    }
+
+    private func signOutCurrentAccount() {
+        Task {
+            await EmailAuthManager.signOutCurrentSession()
+            await MainActor.run {
+                clearAccountSession()
+            }
+        }
     }
 
     private func handleEmailAuthSuccess(email: String) {
@@ -5086,7 +5094,7 @@ struct OnboardingView: View {
     }
 }
 
-private enum EmailAuthMode: String, CaseIterable, Identifiable {
+enum EmailAuthMode: String, CaseIterable, Identifiable {
     case signIn
     case signUp
 
@@ -5227,21 +5235,32 @@ private struct EmailAuthSheetView: View {
 
     private func submit() {
         guard !isSubmitting else { return }
+        let requestMode = mode
+        let requestEmail = email
+        let requestPassword = password
+        let requestConfirmPassword = confirmPassword
         isSubmitting = true
-        defer { isSubmitting = false }
 
-        do {
-            let normalizedEmail = try EmailAuthManager.authenticate(
-                mode: mode,
-                email: email,
-                password: password,
-                confirmPassword: confirmPassword
-            )
-            onSuccess(normalizedEmail)
-            dismiss()
-        } catch {
-            errorMessage = localizedEmailAuthError(error)
-            showError = true
+        Task {
+            do {
+                let normalizedEmail = try await EmailAuthManager.authenticate(
+                    mode: requestMode,
+                    email: requestEmail,
+                    password: requestPassword,
+                    confirmPassword: requestConfirmPassword
+                )
+                await MainActor.run {
+                    isSubmitting = false
+                    onSuccess(normalizedEmail)
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isSubmitting = false
+                    errorMessage = localizedEmailAuthError(error)
+                    showError = true
+                }
+            }
         }
     }
 
@@ -5262,26 +5281,23 @@ private struct EmailAuthSheetView: View {
             return L10n.text("settings.account.error_email_not_found", lang: lang)
         case .invalidCredentials:
             return L10n.text("settings.account.error_invalid_credentials", lang: lang)
+        case .emailNotConfirmed:
+            return L10n.text("settings.account.error_email_not_confirmed", lang: lang)
         case .storageFailure:
             return L10n.text("settings.account.error_storage", lang: lang)
         }
     }
 }
 
-private enum EmailAuthError: Error {
+enum EmailAuthError: Error {
     case invalidEmail
     case passwordTooShort
     case passwordMismatch
     case accountAlreadyExists
     case accountNotFound
     case invalidCredentials
+    case emailNotConfirmed
     case storageFailure
-}
-
-private struct StoredEmailCredentials: Codable {
-    let email: String
-    let saltBase64: String
-    let hashBase64: String
 }
 
 private struct StoredSetupProfile: Codable {
@@ -5373,192 +5389,6 @@ private enum SetupProfileStore {
     }
 }
 
-private enum EmailAuthManager {
-    private static let service = "com.argentumvault.app.emailauth"
-    private static let legacyPrimaryAccount = "primary"
-
-    static func authenticate(
-        mode: EmailAuthMode,
-        email: String,
-        password: String,
-        confirmPassword: String
-    ) throws -> String {
-        switch mode {
-        case .signIn:
-            return try signIn(email: email, password: password)
-        case .signUp:
-            return try signUp(email: email, password: password, confirmPassword: confirmPassword)
-        }
-    }
-
-    private static func signUp(email: String, password: String, confirmPassword: String) throws -> String {
-        let normalizedEmail = try normalized(email: email)
-        try validate(password: password)
-        guard password == confirmPassword else {
-            throw EmailAuthError.passwordMismatch
-        }
-
-        try migrateLegacyPrimaryCredentialsIfNeeded()
-
-        if try loadCredentials(for: normalizedEmail) != nil {
-            throw EmailAuthError.accountAlreadyExists
-        }
-
-        let salt = try randomSalt(length: 16)
-        let hash = passwordHash(password: password, salt: salt)
-        let credentials = StoredEmailCredentials(
-            email: normalizedEmail,
-            saltBase64: salt.base64EncodedString(),
-            hashBase64: hash.base64EncodedString()
-        )
-        try saveCredentials(credentials, for: normalizedEmail)
-        return normalizedEmail
-    }
-
-    private static func signIn(email: String, password: String) throws -> String {
-        let normalizedEmail = try normalized(email: email)
-        try migrateLegacyPrimaryCredentialsIfNeeded()
-
-        guard let credentials = try loadCredentials(for: normalizedEmail) else {
-            throw EmailAuthError.accountNotFound
-        }
-
-        guard let salt = Data(base64Encoded: credentials.saltBase64),
-              let expectedHash = Data(base64Encoded: credentials.hashBase64) else {
-            throw EmailAuthError.storageFailure
-        }
-
-        let hash = passwordHash(password: password, salt: salt)
-        guard hash == expectedHash else {
-            throw EmailAuthError.invalidCredentials
-        }
-        return normalizedEmail
-    }
-
-    private static func normalized(email: String) throws -> String {
-        let normalized = email.trimmed.lowercased()
-        guard normalized.contains("@"), normalized.contains(".") else {
-            throw EmailAuthError.invalidEmail
-        }
-        return normalized
-    }
-
-    private static func validate(password: String) throws {
-        guard password.count >= 6 else {
-            throw EmailAuthError.passwordTooShort
-        }
-    }
-
-    private static func passwordHash(password: String, salt: Data) -> Data {
-        var payload = Data()
-        payload.append(salt)
-        payload.append(contentsOf: password.utf8)
-        return Data(SHA256.hash(data: payload))
-    }
-
-    private static func randomSalt(length: Int) throws -> Data {
-        var bytes = [UInt8](repeating: 0, count: length)
-        let status = SecRandomCopyBytes(kSecRandomDefault, length, &bytes)
-        guard status == errSecSuccess else {
-            throw EmailAuthError.storageFailure
-        }
-        return Data(bytes)
-    }
-
-    private static func migrateLegacyPrimaryCredentialsIfNeeded() throws {
-        guard let legacy = try loadLegacyPrimaryCredentials() else { return }
-        if try loadCredentials(for: legacy.email) == nil {
-            try saveCredentials(legacy, for: legacy.email)
-        }
-        try deleteLegacyPrimaryCredentials()
-    }
-
-    private static func loadLegacyPrimaryCredentials() throws -> StoredEmailCredentials? {
-        try loadCredentials(forKeychainAccount: legacyPrimaryAccount)
-    }
-
-    private static func deleteLegacyPrimaryCredentials() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: legacyPrimaryAccount
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw EmailAuthError.storageFailure
-        }
-    }
-
-    private static func loadCredentials(for email: String) throws -> StoredEmailCredentials? {
-        try loadCredentials(forKeychainAccount: email)
-    }
-
-    private static func loadCredentials(forKeychainAccount account: String) throws -> StoredEmailCredentials? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
-            return nil
-        }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw EmailAuthError.storageFailure
-        }
-        do {
-            return try JSONDecoder().decode(StoredEmailCredentials.self, from: data)
-        } catch {
-            throw EmailAuthError.storageFailure
-        }
-    }
-
-    private static func saveCredentials(_ credentials: StoredEmailCredentials, for keychainAccount: String) throws {
-        let data: Data
-        do {
-            data = try JSONEncoder().encode(credentials)
-        } catch {
-            throw EmailAuthError.storageFailure
-        }
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: keychainAccount
-        ]
-        let updateAttributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
-
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        if status == errSecSuccess {
-            let updateStatus = SecItemUpdate(query as CFDictionary, updateAttributes as CFDictionary)
-            guard updateStatus == errSecSuccess else {
-                throw EmailAuthError.storageFailure
-            }
-            return
-        }
-
-        if status == errSecItemNotFound {
-            var addQuery = query
-            for (key, value) in updateAttributes {
-                addQuery[key] = value
-            }
-            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-            guard addStatus == errSecSuccess else {
-                throw EmailAuthError.storageFailure
-            }
-            return
-        }
-
-        throw EmailAuthError.storageFailure
-    }
-}
 
 private extension String {
     var trimmed: String {

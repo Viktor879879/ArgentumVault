@@ -151,6 +151,7 @@
 "settings.account.error_email_exists" = "Email-акаунт уже створено на цьому пристрої.";
 "settings.account.error_email_not_found" = "Email-акаунт не знайдено. Спочатку зареєструйтеся.";
 "settings.account.error_invalid_credentials" = "Невірний email або пароль.";
+"settings.account.error_email_not_confirmed" = "Спочатку підтвердьте email, потім увійдіть.";
 "settings.account.error_storage" = "Не вдалося безпечно зберегти дані акаунта.";
 "pro.ai.daily_tip.title" = "Порада економії на сьогодні";
 "pro.ai.daily_tip.hint" = "На основі ваших нещодавніх витрат — фокус економії на сьогодні.";
