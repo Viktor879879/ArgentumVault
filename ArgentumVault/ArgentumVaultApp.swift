@@ -874,7 +874,7 @@ private enum StorageModePolicy {
     private static let emailUserEmailKey = "emailUserEmail"
 
     static func currentCloudBackupAccountIdentifier() -> String? {
-        currentEmailAccountIdentifier()
+        currentAppleAccountIdentifier()
     }
 
     static func currentAppleAccountIdentifier() -> String? {
@@ -895,12 +895,11 @@ private enum StorageModePolicy {
     }
 
     static func currentAccountIdentifier() -> String? {
-        // Email is the single source of account identity for storage isolation.
-        currentEmailAccountIdentifier()
+        currentAppleAccountIdentifier() ?? currentEmailAccountIdentifier()
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {
-        // Cloud backup/sync is tied to an email-authenticated session.
+        // Until backend email auth is introduced, cloud backup/sync is Apple-ID-only.
         return currentCloudBackupAccountIdentifier() != nil
     }
 }
