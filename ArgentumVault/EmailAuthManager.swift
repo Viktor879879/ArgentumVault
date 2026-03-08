@@ -174,9 +174,15 @@ private enum SupabaseConfiguration {
             throw EmailAuthError.storageFailure
         }
 
+        let options = SupabaseClientOptions(
+            auth: .init(emitLocalSessionAsInitialSession: true),
+            global: .init(logger: nil)
+        )
+
         return SupabaseClient(
             supabaseURL: url,
-            supabaseKey: trimmedKey
+            supabaseKey: trimmedKey,
+            options: options
         )
     }
 }

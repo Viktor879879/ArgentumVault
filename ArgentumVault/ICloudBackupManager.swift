@@ -60,6 +60,12 @@ enum ICloudBackupManager {
         }
         defaults.set(now, forKey: lastAttemptKey)
 
+        // Protect cloud snapshot from accidental overwrite with an empty state
+        // right after first launch / fresh install on a new device.
+        if !force, !hasCoreFinancialData(in: modelContext) {
+            return
+        }
+
         do {
             let snapshot = try makeSnapshot(from: modelContext)
             let encoder = JSONEncoder()
@@ -102,10 +108,7 @@ enum ICloudBackupManager {
         let bucket = accountBucket(accountIdentifier)
 
         let payload: Data
-        if let backupURL = backupFileURL(for: accountIdentifier),
-           FileManager.default.fileExists(atPath: backupURL.path) {
-            payload = try Data(contentsOf: backupURL)
-        } else if let cloudPayload = try await fetchSnapshotPayloadFromCloudKit(bucket: bucket) {
+        if let cloudPayload = try await fetchSnapshotPayloadFromCloudKit(bucket: bucket) {
             payload = cloudPayload
             if let backupURL = backupFileURL(for: accountIdentifier) {
                 try? FileManager.default.createDirectory(
@@ -114,6 +117,9 @@ enum ICloudBackupManager {
                 )
                 try? payload.write(to: backupURL, options: .atomic)
             }
+        } else if let backupURL = backupFileURL(for: accountIdentifier),
+                  FileManager.default.fileExists(atPath: backupURL.path) {
+            payload = try Data(contentsOf: backupURL)
         } else {
             return false
         }
@@ -369,23 +375,22 @@ enum ICloudBackupManager {
         _ record: CKRecord,
         in database: CKDatabase
     ) async throws -> CKRecord {
-        try await withCheckedThrowingContinuation { continuation in
-            let operation = CKModifyRecordsOperation(
-                recordsToSave: [record],
-                recordIDsToDelete: nil
-            )
-            operation.savePolicy = .changedKeys
-            operation.isAtomic = true
-            operation.modifyRecordsCompletionBlock = { savedRecords, _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let savedRecord = savedRecords?.first {
-                    continuation.resume(returning: savedRecord)
-                } else {
-                    continuation.resume(throwing: CKError(.internalError))
-                }
-            }
-            database.add(operation)
+        let result = try await database.modifyRecords(
+            saving: [record],
+            deleting: [],
+            savePolicy: .changedKeys,
+            atomically: true
+        )
+
+        guard let saveResult = result.saveResults[record.recordID] else {
+            throw CKError(.internalError)
+        }
+
+        switch saveResult {
+        case .success(let savedRecord):
+            return savedRecord
+        case .failure(let error):
+            throw error
         }
     }
 

@@ -94,7 +94,15 @@ struct ContentView: View {
     }
 
     private var isAccountConnected: Bool {
-        !emailUserEmail.isEmpty
+        let normalizedMethod = authMethod.trimmed.lowercased()
+        switch normalizedMethod {
+        case "apple":
+            return !appleUserID.trimmed.isEmpty
+        case "email":
+            return !emailUserEmail.trimmed.isEmpty
+        default:
+            return !emailUserEmail.trimmed.isEmpty || !appleUserID.trimmed.isEmpty
+        }
     }
     
     var body: some View {
@@ -174,12 +182,16 @@ struct ContentView: View {
             if authMethod.isEmpty {
                 if !emailUserEmail.isEmpty {
                     authMethod = "email"
+                } else if !appleUserID.isEmpty {
+                    authMethod = "apple"
                 }
             }
-            if authMethod != "email" {
+            if authMethod == "email" {
                 appleUserID = ""
                 appleUserEmail = ""
                 appleUserName = ""
+            } else if authMethod == "apple" {
+                emailUserEmail = ""
             }
             if appCountryCode.isEmpty {
                 appCountryCode = CountryCatalog.defaultCountryCode()
@@ -337,7 +349,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private var isAccountConnected: Bool {
-        !emailUserEmail.isEmpty
+        currentSetupAccountID() != nil
     }
 
     var body: some View {
@@ -555,7 +567,18 @@ struct FirstLaunchSetupView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        SetupProfileStore.emailAccountID(emailUserEmail)
+        let normalizedMethod = authMethod.trimmed.lowercased()
+        switch normalizedMethod {
+        case "apple":
+            return SetupProfileStore.appleAccountID(appleUserID)
+                ?? SetupProfileStore.emailAccountID(emailUserEmail)
+        case "email":
+            return SetupProfileStore.emailAccountID(emailUserEmail)
+                ?? SetupProfileStore.appleAccountID(appleUserID)
+        default:
+            return SetupProfileStore.emailAccountID(emailUserEmail)
+                ?? SetupProfileStore.appleAccountID(appleUserID)
+        }
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {
@@ -4121,7 +4144,7 @@ struct SettingsView: View {
     }
 
     private var isAccountConnected: Bool {
-        !emailUserEmail.isEmpty
+        currentSetupAccountID() != nil
     }
     
     var body: some View {
@@ -4627,9 +4650,22 @@ struct SettingsView: View {
 
 #if DEBUG
     private var currentBackupAccountIdentifier: String? {
-        let email = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !email.isEmpty else { return nil }
-        return "email:\(email)"
+        let normalizedMethod = authMethod.trimmed.lowercased()
+        let normalizedEmail = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedAppleID = appleUserID.trimmed
+
+        switch normalizedMethod {
+        case "apple":
+            if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
+            if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
+        case "email":
+            if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
+            if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
+        default:
+            if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
+            if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
+        }
+        return nil
     }
 
     private func refreshCloudDebugStatus() {
@@ -4743,7 +4779,18 @@ struct SettingsView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        SetupProfileStore.emailAccountID(emailUserEmail)
+        let normalizedMethod = authMethod.trimmed.lowercased()
+        switch normalizedMethod {
+        case "apple":
+            return SetupProfileStore.appleAccountID(appleUserID)
+                ?? SetupProfileStore.emailAccountID(emailUserEmail)
+        case "email":
+            return SetupProfileStore.emailAccountID(emailUserEmail)
+                ?? SetupProfileStore.appleAccountID(appleUserID)
+        default:
+            return SetupProfileStore.emailAccountID(emailUserEmail)
+                ?? SetupProfileStore.appleAccountID(appleUserID)
+        }
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {

@@ -91,12 +91,18 @@ private struct AppBootstrapView: View {
     private func bootstrapIfNeeded() async {
         guard modelContainer == nil else { return }
 
+        let normalizedAppleID = bootstrapAppleUserID.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedEmail = bootstrapEmailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalizedEmail.isEmpty,
            let restoredEmail = await EmailAuthManager.restoreSessionEmail() {
             bootstrapEmailUserEmail = restoredEmail
             bootstrapAuthMethod = "email"
         } else if !normalizedEmail.isEmpty, bootstrapAuthMethod.isEmpty {
+            bootstrapAuthMethod = "email"
+        } else if !normalizedAppleID.isEmpty, bootstrapAuthMethod.isEmpty {
+            bootstrapAuthMethod = "apple"
+        } else if bootstrapAuthMethod == "apple", normalizedAppleID.isEmpty, !normalizedEmail.isEmpty {
+            // Recover gracefully if method is stale but we still have a valid email session.
             bootstrapAuthMethod = "email"
         }
 
@@ -882,9 +888,10 @@ private enum AppStorageDiagnostics {
 private enum StorageModePolicy {
     private static let appleUserIDKey = "appleUserID"
     private static let emailUserEmailKey = "emailUserEmail"
+    private static let authMethodKey = "authMethod"
 
     static func currentCloudBackupAccountIdentifier() -> String? {
-        currentEmailAccountIdentifier()
+        currentAccountIdentifier()
     }
 
     static func currentAppleAccountIdentifier() -> String? {
@@ -905,12 +912,23 @@ private enum StorageModePolicy {
     }
 
     static func currentAccountIdentifier() -> String? {
-        // Email is the single source of account identity for storage isolation.
-        currentEmailAccountIdentifier()
+        let defaults = UserDefaults.standard
+        let method = defaults.string(forKey: authMethodKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        switch method {
+        case "email":
+            return currentEmailAccountIdentifier() ?? currentAppleAccountIdentifier()
+        case "apple":
+            return currentAppleAccountIdentifier() ?? currentEmailAccountIdentifier()
+        default:
+            // Backward compatibility for legacy states without explicit auth method.
+            return currentEmailAccountIdentifier() ?? currentAppleAccountIdentifier()
+        }
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {
-        // Cloud backup/sync is tied to an email-authenticated session.
         return currentCloudBackupAccountIdentifier() != nil
     }
 }
