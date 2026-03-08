@@ -71,6 +71,7 @@ struct ContentView: View {
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
+    @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
 #if DEBUG
     @AppStorage("debugResetFirstLaunchOnce_v5") private var debugResetFirstLaunchOnce = true
@@ -99,9 +100,9 @@ struct ContentView: View {
         case "apple":
             return !appleUserID.trimmed.isEmpty
         case "email":
-            return !emailUserEmail.trimmed.isEmpty
+            return !emailUserID.trimmed.isEmpty || !emailUserEmail.trimmed.isEmpty
         default:
-            return !emailUserEmail.trimmed.isEmpty || !appleUserID.trimmed.isEmpty
+            return !emailUserID.trimmed.isEmpty || !emailUserEmail.trimmed.isEmpty || !appleUserID.trimmed.isEmpty
         }
     }
     
@@ -171,6 +172,7 @@ struct ContentView: View {
                 appleUserEmail = ""
                 appleUserName = ""
                 emailUserEmail = ""
+                emailUserID = ""
                 authMethod = ""
                 debugResetFirstLaunchOnce = false
             }
@@ -180,7 +182,7 @@ struct ContentView: View {
                 didCompleteInitialSetup = true
             }
             if authMethod.isEmpty {
-                if !emailUserEmail.isEmpty {
+                if !emailUserEmail.isEmpty || !emailUserID.isEmpty {
                     authMethod = "email"
                 } else if !appleUserID.isEmpty {
                     authMethod = "apple"
@@ -192,6 +194,7 @@ struct ContentView: View {
                 appleUserName = ""
             } else if authMethod == "apple" {
                 emailUserEmail = ""
+                emailUserID = ""
             }
             if appCountryCode.isEmpty {
                 appCountryCode = CountryCatalog.defaultCountryCode()
@@ -316,6 +319,7 @@ struct FirstLaunchSetupView: View {
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
+    @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
@@ -446,8 +450,8 @@ struct FirstLaunchSetupView: View {
                 lang: uiLanguageCode,
                 initialMode: mode,
                 showsModePicker: false
-            ) { email in
-                handleEmailAuthSuccess(email: email)
+            ) { session in
+                handleEmailAuthSuccess(session: session)
             }
         }
         .onAppear {
@@ -492,15 +496,16 @@ struct FirstLaunchSetupView: View {
         saveSetupProfileForCurrentAccount()
     }
 
-    private func handleEmailAuthSuccess(email: String) {
+    private func handleEmailAuthSuccess(session: EmailAuthSession) {
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
-        emailUserEmail = email
+        emailUserEmail = session.email
+        emailUserID = session.userID
         authMethod = "email"
         SessionEvents.postAccountSessionDidChange()
         triggerProRestoreAfterAuthorization()
-        if let accountID = SetupProfileStore.emailAccountID(email),
+        if let accountID = SetupProfileStore.emailAccountID(session.email, userID: session.userID),
            restoreSetupProfileIfPresent(for: accountID) {
             return
         }
@@ -572,9 +577,9 @@ struct FirstLaunchSetupView: View {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
         case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         default:
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
                 ?? SetupProfileStore.appleAccountID(appleUserID)
         }
     }
@@ -4089,6 +4094,7 @@ struct SettingsView: View {
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
+    @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
 
@@ -4505,8 +4511,8 @@ struct SettingsView: View {
                     lang: uiLanguageCode,
                     initialMode: mode,
                     showsModePicker: false
-                ) { email in
-                    handleEmailAuthSuccess(email: email)
+                ) { session in
+                    handleEmailAuthSuccess(session: session)
                 }
             }
             .onAppear {
@@ -4615,6 +4621,7 @@ struct SettingsView: View {
         appleUserEmail = ""
         appleUserName = ""
         emailUserEmail = ""
+        emailUserID = ""
         authMethod = ""
         SessionEvents.postAccountSessionDidChange()
     }
@@ -4628,11 +4635,12 @@ struct SettingsView: View {
         }
     }
 
-    private func handleEmailAuthSuccess(email: String) {
+    private func handleEmailAuthSuccess(session: EmailAuthSession) {
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
-        emailUserEmail = email
+        emailUserEmail = session.email
+        emailUserID = session.userID
         authMethod = "email"
         SessionEvents.postAccountSessionDidChange()
         triggerProRestoreAfterAuthorization()
@@ -4652,14 +4660,17 @@ struct SettingsView: View {
     private var currentBackupAccountIdentifier: String? {
         let normalizedMethod = authMethod.trimmed.lowercased()
         let normalizedEmail = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedEmailUserID = emailUserID.trimmed.lowercased()
         let normalizedAppleID = appleUserID.trimmed
 
         switch normalizedMethod {
         case "apple":
             if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
         case "email":
+            if !normalizedEmailUserID.isEmpty { return "email_uid:\(normalizedEmailUserID)" }
             if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
         default:
+            if !normalizedEmailUserID.isEmpty { return "email_uid:\(normalizedEmailUserID)" }
             if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
             if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
         }
@@ -4782,9 +4793,9 @@ struct SettingsView: View {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
         case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         default:
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
                 ?? SetupProfileStore.appleAccountID(appleUserID)
         }
     }
@@ -5167,7 +5178,7 @@ private struct EmailAuthSheetView: View {
 
     let lang: String
     let showsModePicker: Bool
-    let onSuccess: (String) -> Void
+    let onSuccess: (EmailAuthSession) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var mode: EmailAuthMode
@@ -5183,7 +5194,7 @@ private struct EmailAuthSheetView: View {
         lang: String,
         initialMode: EmailAuthMode = .signIn,
         showsModePicker: Bool = true,
-        onSuccess: @escaping (String) -> Void
+        onSuccess: @escaping (EmailAuthSession) -> Void
     ) {
         self.lang = lang
         self.showsModePicker = showsModePicker
@@ -5220,7 +5231,6 @@ private struct EmailAuthSheetView: View {
 
                 Section(L10n.text("settings.account.password", lang: lang)) {
                     SecureField(L10n.text("settings.account.password", lang: lang), text: $password)
-                        .id("email-auth-password")
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .textContentType(mode == .signUp ? .newPassword : .password)
@@ -5235,7 +5245,6 @@ private struct EmailAuthSheetView: View {
                         }
                     if mode == .signUp {
                         SecureField(L10n.text("settings.account.confirm_password", lang: lang), text: $confirmPassword)
-                            .id("email-auth-confirm-password")
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .textContentType(.newPassword)
@@ -5286,7 +5295,7 @@ private struct EmailAuthSheetView: View {
 
         Task {
             do {
-                let normalizedEmail = try await EmailAuthManager.authenticate(
+                let authSession = try await EmailAuthManager.authenticate(
                     mode: requestMode,
                     email: requestEmail,
                     password: requestPassword,
@@ -5294,7 +5303,7 @@ private struct EmailAuthSheetView: View {
                 )
                 await MainActor.run {
                     isSubmitting = false
-                    onSuccess(normalizedEmail)
+                    onSuccess(authSession)
                     dismiss()
                 }
             } catch {
@@ -5359,10 +5368,17 @@ private enum SetupProfileStore {
         return "apple:\(normalized)"
     }
 
-    static func emailAccountID(_ email: String) -> String? {
+    static func emailAccountID(_ email: String, userID: String? = nil) -> String? {
+        let normalizedUserID = userID?.trimmed.lowercased() ?? ""
+        if !normalizedUserID.isEmpty {
+            return "email_uid:\(normalizedUserID)"
+        }
+
         let normalized = email.trimmed.lowercased()
-        guard !normalized.isEmpty else { return nil }
-        return "email:\(normalized)"
+        if !normalized.isEmpty {
+            return "email:\(normalized)"
+        }
+        return nil
     }
 
     static func load(for accountID: String) throws -> StoredSetupProfile? {

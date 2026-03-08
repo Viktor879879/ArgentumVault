@@ -2,6 +2,11 @@ import Foundation
 import Supabase
 import Auth
 
+struct EmailAuthSession {
+    let email: String
+    let userID: String
+}
+
 enum EmailAuthManager {
     private static let clientResult: Result<SupabaseClient, EmailAuthError> = {
         do {
@@ -16,7 +21,7 @@ enum EmailAuthManager {
         email: String,
         password: String,
         confirmPassword: String
-    ) async throws -> String {
+    ) async throws -> EmailAuthSession {
         switch mode {
         case .signIn:
             return try await signIn(email: email, password: password)
@@ -25,18 +30,18 @@ enum EmailAuthManager {
         }
     }
 
-    static func restoreSessionEmail() async -> String? {
+    static func restoreSession() async -> EmailAuthSession? {
         guard let client = try? configuredClient() else { return nil }
 
-        if let currentEmail = normalized(email: client.auth.currentUser?.email) {
-            return currentEmail
+        if let currentUser = client.auth.currentUser,
+           let currentSession = makeSession(from: currentUser) {
+            return currentSession
         }
 
-        guard let sessionEmail = try? await client.auth.session.user.email else {
+        guard let sessionUser = try? await client.auth.session.user else {
             return nil
         }
-
-        return normalized(email: sessionEmail)
+        return makeSession(from: sessionUser)
     }
 
     static func signOutCurrentSession() async {
@@ -44,7 +49,7 @@ enum EmailAuthManager {
         try? await client.auth.signOut(scope: .local)
     }
 
-    private static func signUp(email: String, password: String, confirmPassword: String) async throws -> String {
+    private static func signUp(email: String, password: String, confirmPassword: String) async throws -> EmailAuthSession {
         let normalizedEmail = try normalizedRequired(email: email)
         try validate(password: password)
         guard password == confirmPassword else {
@@ -56,25 +61,31 @@ enum EmailAuthManager {
         do {
             let response = try await client.auth.signUp(email: normalizedEmail, password: password)
 
-            if let responseEmail = normalized(email: response.user.email) {
-                return responseEmail
+            if let signUpSession = makeSession(from: response.user) {
+                return signUpSession
             }
 
             let session = try await client.auth.signIn(email: normalizedEmail, password: password)
-            return normalized(email: session.user.email) ?? normalizedEmail
+            guard let signInSession = makeSession(from: session.user) else {
+                throw EmailAuthError.storageFailure
+            }
+            return signInSession
         } catch {
             throw map(error)
         }
     }
 
-    private static func signIn(email: String, password: String) async throws -> String {
+    private static func signIn(email: String, password: String) async throws -> EmailAuthSession {
         let normalizedEmail = try normalizedRequired(email: email)
 
         let client = try configuredClient()
 
         do {
             let session = try await client.auth.signIn(email: normalizedEmail, password: password)
-            return normalized(email: session.user.email) ?? normalizedEmail
+            guard let authSession = makeSession(from: session.user) else {
+                throw EmailAuthError.storageFailure
+            }
+            return authSession
         } catch {
             throw map(error)
         }
@@ -102,6 +113,20 @@ enum EmailAuthManager {
             return nil
         }
         return normalized
+    }
+
+    private static func normalized(userID: UUID?) -> String? {
+        guard let userID else { return nil }
+        return userID.uuidString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func makeSession(from user: User?) -> EmailAuthSession? {
+        guard let user,
+              let normalizedEmail = normalized(email: user.email),
+              let normalizedUserID = normalized(userID: user.id) else {
+            return nil
+        }
+        return EmailAuthSession(email: normalizedEmail, userID: normalizedUserID)
     }
 
     private static func validate(password: String) throws {

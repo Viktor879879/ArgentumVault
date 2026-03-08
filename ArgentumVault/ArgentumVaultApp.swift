@@ -22,6 +22,7 @@ private struct AppBootstrapView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appleUserID") private var bootstrapAppleUserID = ""
     @AppStorage("emailUserEmail") private var bootstrapEmailUserEmail = ""
+    @AppStorage("emailUserID") private var bootstrapEmailUserID = ""
     @AppStorage("authMethod") private var bootstrapAuthMethod = ""
     @State private var modelContainer: ModelContainer?
     @State private var isCloudStoreEnabled = false
@@ -65,6 +66,11 @@ private struct AppBootstrapView: View {
                 await switchContainerIfNeeded(refreshEntitlements: false)
             }
         }
+        .onChange(of: bootstrapEmailUserID) { _, _ in
+            Task { @MainActor in
+                await switchContainerIfNeeded(refreshEntitlements: false)
+            }
+        }
         .onChange(of: bootstrapAuthMethod) { _, _ in
             Task { @MainActor in
                 await switchContainerIfNeeded(refreshEntitlements: false)
@@ -92,9 +98,11 @@ private struct AppBootstrapView: View {
 
         let normalizedAppleID = bootstrapAppleUserID.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedEmail = bootstrapEmailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalizedEmail.isEmpty,
-           let restoredEmail = await EmailAuthManager.restoreSessionEmail() {
-            bootstrapEmailUserEmail = restoredEmail
+        let normalizedEmailUserID = bootstrapEmailUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if (normalizedEmail.isEmpty || normalizedEmailUserID.isEmpty),
+           let restoredSession = await EmailAuthManager.restoreSession() {
+            bootstrapEmailUserEmail = restoredSession.email
+            bootstrapEmailUserID = restoredSession.userID
             bootstrapAuthMethod = "email"
         } else if !normalizedEmail.isEmpty, bootstrapAuthMethod.isEmpty {
             bootstrapAuthMethod = "email"
@@ -802,10 +810,11 @@ private enum AppStorageDiagnostics {
 private enum StorageModePolicy {
     private static let appleUserIDKey = "appleUserID"
     private static let emailUserEmailKey = "emailUserEmail"
+    private static let emailUserIDKey = "emailUserID"
     private static let authMethodKey = "authMethod"
 
     static func currentCloudBackupAccountIdentifier() -> String? {
-        currentEmailAccountIdentifier()
+        currentEmailCloudBackupIdentifier()
     }
 
     static func currentAppleAccountIdentifier() -> String? {
@@ -821,8 +830,27 @@ private enum StorageModePolicy {
         let emailUserEmail = defaults.string(forKey: emailUserEmailKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        guard !emailUserEmail.isEmpty else { return nil }
-        return "email:\(emailUserEmail)"
+        if !emailUserEmail.isEmpty {
+            return "email:\(emailUserEmail)"
+        }
+        let emailUserID = defaults.string(forKey: emailUserIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if !emailUserID.isEmpty {
+            return "email_uid:\(emailUserID)"
+        }
+        return nil
+    }
+
+    private static func currentEmailCloudBackupIdentifier() -> String? {
+        let defaults = UserDefaults.standard
+        let emailUserID = defaults.string(forKey: emailUserIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if !emailUserID.isEmpty {
+            return "email_uid:\(emailUserID)"
+        }
+        return currentEmailAccountIdentifier()
     }
 
     static func currentAccountIdentifier() -> String? {

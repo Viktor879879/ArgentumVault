@@ -46,6 +46,8 @@ enum ICloudBackupManager {
     private static let storageCloudKitReasonKey = "storage.cloudkit.last_reason_code"
     private static let storageModeActiveKey = "storage.mode.active"
     private static let storageModeRequestedKey = "storage.mode.requested_cloud"
+    private static let emailUserEmailKey = "emailUserEmail"
+    private static let emailUserIDKey = "emailUserID"
     private static let minimumAttemptInterval: TimeInterval = 5
     private static var cloudUploadTasks: [String: Task<Void, Never>] = [:]
     private static var pendingCloudUploads: [String: PendingCloudUpload] = [:]
@@ -69,6 +71,19 @@ enum ICloudBackupManager {
         let payload_hash: String?
         let schema_version: Int?
         let updated_at: String?
+    }
+
+    private struct SupabaseSnapshotUpdateRow: Encodable {
+        let payload_base64: String
+        let payload_hash: String
+        let schema_version: Int
+        let updated_at: String
+    }
+
+    private struct RemoteSnapshotPayload {
+        let payload: Data
+        let payloadHash: String?
+        let updatedAt: Date?
     }
 
     private enum BackupSyncRouteError: LocalizedError {
@@ -144,15 +159,23 @@ enum ICloudBackupManager {
 
     @discardableResult
     static func restoreIfNeeded(modelContext: ModelContext, accountIdentifier: String) async throws -> Bool {
-        guard !hasCoreFinancialData(in: modelContext) else { return false }
         let bucket = accountBucket(accountIdentifier)
+        let hasLocalCoreData = hasCoreFinancialData(in: modelContext)
 
-        let payload: Data
-        if let cloudPayload = try await fetchSnapshotPayloadFromRemote(
+        if let remoteSnapshot = try await fetchSnapshotPayloadFromRemote(
             bucket: bucket,
             accountIdentifier: accountIdentifier
         ) {
-            payload = cloudPayload
+            if shouldSkipRemoteRestore(
+                remoteSnapshot: remoteSnapshot,
+                modelContext: modelContext,
+                bucket: bucket,
+                hasLocalCoreData: hasLocalCoreData
+            ) {
+                return false
+            }
+
+            let payload = remoteSnapshot.payload
             if let backupURL = backupFileURL(for: accountIdentifier) {
                 try? FileManager.default.createDirectory(
                     at: backupURL.deletingLastPathComponent(),
@@ -160,18 +183,23 @@ enum ICloudBackupManager {
                 )
                 try? payload.write(to: backupURL, options: .atomic)
             }
-        } else if let backupURL = backupFileURL(for: accountIdentifier),
-                  FileManager.default.fileExists(atPath: backupURL.path) {
-            payload = try Data(contentsOf: backupURL)
-        } else {
-            return false
+
+            let didRestore = try restorePayload(payload, modelContext: modelContext, bucket: bucket)
+            if didRestore {
+                UserDefaults.standard.removeObject(forKey: lastCloudErrorDefaultsPrefix + bucket)
+            }
+            return didRestore
         }
 
-        let didRestore = try restorePayload(payload, modelContext: modelContext, bucket: bucket)
-        if didRestore {
-            UserDefaults.standard.removeObject(forKey: lastCloudErrorDefaultsPrefix + bucket)
+        guard !hasLocalCoreData else {
+            return false
         }
-        return didRestore
+        guard let backupURL = backupFileURL(for: accountIdentifier),
+              FileManager.default.fileExists(atPath: backupURL.path) else {
+            return false
+        }
+        let localPayload = try Data(contentsOf: backupURL)
+        return try restorePayload(localPayload, modelContext: modelContext, bucket: bucket)
     }
 
     static func shouldForceBackupAfterRestoreAttempt(
@@ -342,34 +370,83 @@ enum ICloudBackupManager {
         bucket: String
     ) async throws {
         let client = try EmailAuthManager.syncClient()
+        let updatedAt = iso8601Formatter.string(from: Date())
         let row = SupabaseSnapshotUpsertRow(
             account_bucket: bucket,
             payload_base64: payload.base64EncodedString(),
             payload_hash: payloadHash,
             schema_version: schemaVersion,
-            updated_at: iso8601Formatter.string(from: Date())
+            updated_at: updatedAt
         )
-        _ = try await client
+        let updateRow = SupabaseSnapshotUpdateRow(
+            payload_base64: row.payload_base64,
+            payload_hash: row.payload_hash,
+            schema_version: row.schema_version,
+            updated_at: row.updated_at
+        )
+
+        do {
+            _ = try await client
+                .from(supabaseSnapshotsTable)
+                .upsert(
+                    row,
+                    onConflict: supabaseAccountBucketField,
+                    returning: .minimal
+                )
+                .execute()
+            return
+        } catch let postgrestError as PostgrestError {
+            guard shouldFallbackFromUpsert(error: postgrestError) else {
+                throw postgrestError
+            }
+        }
+
+        let existing: PostgrestResponse<[SupabaseSnapshotSelectRow]> = try await client
             .from(supabaseSnapshotsTable)
-            .upsert(
-                row,
-                onConflict: supabaseAccountBucketField,
-                returning: .minimal
-            )
+            .select(supabaseAccountBucketField)
+            .eq(supabaseAccountBucketField, value: bucket)
+            .limit(1)
             .execute()
+
+        if existing.value.isEmpty {
+            _ = try await client
+                .from(supabaseSnapshotsTable)
+                .insert(row, returning: .minimal)
+                .execute()
+        } else {
+            _ = try await client
+                .from(supabaseSnapshotsTable)
+                .update(updateRow, returning: .minimal)
+                .eq(supabaseAccountBucketField, value: bucket)
+                .execute()
+        }
     }
 
     private static func fetchSnapshotPayloadFromRemote(
         bucket: String,
         accountIdentifier: String
-    ) async throws -> Data? {
+    ) async throws -> RemoteSnapshotPayload? {
         guard shouldUseSupabaseSync(for: accountIdentifier) else {
             return nil
         }
-        return try await fetchSnapshotPayloadFromSupabase(bucket: bucket)
+
+        if let primarySnapshot = try await fetchSnapshotPayloadFromSupabase(bucket: bucket) {
+            return primarySnapshot
+        }
+
+        for legacyBucket in legacySupabaseBuckets(
+            for: accountIdentifier,
+            excluding: bucket
+        ) {
+            if let legacySnapshot = try await fetchSnapshotPayloadFromSupabase(bucket: legacyBucket) {
+                return legacySnapshot
+            }
+        }
+
+        return nil
     }
 
-    private static func fetchSnapshotPayloadFromSupabase(bucket: String) async throws -> Data? {
+    private static func fetchSnapshotPayloadFromSupabase(bucket: String) async throws -> RemoteSnapshotPayload? {
         let client = try EmailAuthManager.syncClient()
         let response: PostgrestResponse<[SupabaseSnapshotSelectRow]> = try await client
             .from(supabaseSnapshotsTable)
@@ -393,11 +470,110 @@ enum ICloudBackupManager {
             )
         }
 
-        return payload
+        return RemoteSnapshotPayload(
+            payload: payload,
+            payloadHash: row.payload_hash,
+            updatedAt: parseServerDate(row.updated_at)
+        )
     }
 
     private static func shouldUseSupabaseSync(for accountIdentifier: String) -> Bool {
-        accountIdentifier.hasPrefix("email:")
+        accountIdentifier.hasPrefix("email:") || accountIdentifier.hasPrefix("email_uid:")
+    }
+
+    private static func legacySupabaseBuckets(
+        for accountIdentifier: String,
+        excluding primaryBucket: String
+    ) -> [String] {
+        let defaults = UserDefaults.standard
+        let normalizedEmail = defaults.string(forKey: emailUserEmailKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let normalizedUserID = defaults.string(forKey: emailUserIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        var buckets: [String] = []
+        if accountIdentifier.hasPrefix("email_uid:"), !normalizedEmail.isEmpty {
+            buckets.append(accountBucket("email:\(normalizedEmail)"))
+        }
+        if accountIdentifier.hasPrefix("email:"), !normalizedUserID.isEmpty {
+            buckets.append(accountBucket("email_uid:\(normalizedUserID)"))
+        }
+
+        var seen: Set<String> = [primaryBucket]
+        return buckets.filter { bucket in
+            guard !seen.contains(bucket) else { return false }
+            seen.insert(bucket)
+            return true
+        }
+    }
+
+    private static func shouldFallbackFromUpsert(error: PostgrestError) -> Bool {
+        let code = error.code?.lowercased() ?? ""
+        let message = error.message.lowercased()
+        let detail = error.detail?.lowercased() ?? ""
+        let combined = "\(code) \(message) \(detail)"
+        return combined.contains("42p10")
+            || combined.contains("on conflict")
+            || combined.contains("no unique")
+            || combined.contains("exclusion constraint")
+    }
+
+    private static func shouldSkipRemoteRestore(
+        remoteSnapshot: RemoteSnapshotPayload,
+        modelContext: ModelContext,
+        bucket: String,
+        hasLocalCoreData: Bool
+    ) -> Bool {
+        guard hasLocalCoreData else { return false }
+
+        if let localPayload = try? encodeSnapshotPayload(from: modelContext),
+           let remoteHash = remoteSnapshot.payloadHash {
+            let localHash = hashHex(data: localPayload)
+            if localHash == remoteHash {
+                return true
+            }
+        }
+
+        let defaults = UserDefaults.standard
+        let lastCloudSuccess = dateFromDefaults(defaults, key: lastCloudSuccessDefaultsPrefix + bucket)
+        let lastCloudHash = defaults.string(forKey: lastCloudHashDefaultsPrefix + bucket)
+
+        guard let lastCloudSuccess else {
+            // Device has local data but has never synced this account: prefer remote snapshot.
+            return false
+        }
+
+        if let remoteUpdatedAt = remoteSnapshot.updatedAt,
+           remoteUpdatedAt.timeIntervalSince1970 > (lastCloudSuccess.timeIntervalSince1970 + 1) {
+            return false
+        }
+
+        if let remoteHash = remoteSnapshot.payloadHash,
+           remoteHash != lastCloudHash {
+            return false
+        }
+
+        return true
+    }
+
+    private static func encodeSnapshotPayload(from context: ModelContext) throws -> Data {
+        let snapshot = try makeSnapshot(from: context)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(snapshot)
+    }
+
+    private static func parseServerDate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        if let withFractional = iso8601Formatter.date(from: raw) {
+            return withFractional
+        }
+        let fallback = ISO8601DateFormatter()
+        fallback.formatOptions = [.withInternetDateTime]
+        return fallback.date(from: raw)
     }
 
     nonisolated private static func reasonCode(for error: Error) -> String {
