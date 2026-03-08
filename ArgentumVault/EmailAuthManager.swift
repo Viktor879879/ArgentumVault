@@ -84,6 +84,10 @@ enum EmailAuthManager {
         try clientResult.get()
     }
 
+    static func syncClient() throws -> SupabaseClient {
+        try configuredClient()
+    }
+
     private static func normalizedRequired(email: String) throws -> String {
         guard let normalized = normalized(email: email) else {
             throw EmailAuthError.invalidEmail

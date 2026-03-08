@@ -571,10 +571,8 @@ struct FirstLaunchSetupView: View {
         switch normalizedMethod {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail)
         case "email":
             return SetupProfileStore.emailAccountID(emailUserEmail)
-                ?? SetupProfileStore.appleAccountID(appleUserID)
         default:
             return SetupProfileStore.emailAccountID(emailUserEmail)
                 ?? SetupProfileStore.appleAccountID(appleUserID)
@@ -4188,7 +4186,7 @@ struct SettingsView: View {
                 }
 #if DEBUG
                 if isAccountConnected {
-                    Section("CloudKit Debug") {
+                    Section("Sync Debug") {
                         if let status = cloudDebugStatus {
                             Text("Bucket: \(status.accountBucket)")
                                 .font(.caption2)
@@ -4212,7 +4210,7 @@ struct SettingsView: View {
                             Text("Last local backup: \(debugDateText(status.lastLocalSuccess))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("Last CloudKit upload: \(debugDateText(status.lastCloudSuccess))")
+                            Text("Last remote upload: \(debugDateText(status.lastCloudSuccess))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
 
@@ -4237,7 +4235,7 @@ struct SettingsView: View {
                             refreshCloudDebugStatus()
                         } label: {
                             HStack {
-                                Text("Refresh cloud status")
+                                Text("Refresh sync status")
                                 Spacer()
                             }
                             .contentShape(Rectangle())
@@ -4248,7 +4246,7 @@ struct SettingsView: View {
                             forceCloudBackupNow()
                         } label: {
                             HStack {
-                                Text("Force cloud backup now")
+                                Text("Force backup now")
                                 Spacer()
                                 if isCloudDebugBusy {
                                     ProgressView()
@@ -4263,7 +4261,7 @@ struct SettingsView: View {
                             restoreFromCloudNow()
                         } label: {
                             HStack {
-                                Text("Try restore from cloud")
+                                Text("Try restore from backup")
                                 Spacer()
                                 if isCloudDebugBusy {
                                     ProgressView()
@@ -4571,6 +4569,8 @@ struct SettingsView: View {
         let reasonCode = defaults.string(forKey: "storage.cloudkit.last_reason_code") ?? "generic"
         let localizationKey: String
         switch reasonCode {
+        case "email_account_required":
+            localizationKey = "settings.storage.reason.email_account_required"
         case "no_icloud_account":
             localizationKey = "settings.storage.reason.no_icloud_account"
         case "restricted":
@@ -4657,10 +4657,8 @@ struct SettingsView: View {
         switch normalizedMethod {
         case "apple":
             if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
-            if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
         case "email":
             if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
-            if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
         default:
             if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
             if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
@@ -4695,7 +4693,7 @@ struct SettingsView: View {
             refreshCloudDebugStatus()
             finishCloudDebugOperation(
                 token: token,
-                message: "Forced backup finished. Refresh CloudKit Dashboard."
+                message: "Forced backup finished. Refresh remote dashboard."
             )
         }
     }
@@ -4705,7 +4703,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
-        guard let token = startCloudDebugOperation(message: "Trying restore from cloud...") else {
+        guard let token = startCloudDebugOperation(message: "Trying restore from remote...") else {
             return
         }
         Task { @MainActor in
@@ -4717,8 +4715,8 @@ struct SettingsView: View {
             finishCloudDebugOperation(
                 token: token,
                 message: restored
-                    ? "Restore completed from cloud snapshot."
-                    : "No cloud snapshot found for this account."
+                    ? "Restore completed from remote snapshot."
+                    : "No remote snapshot found for this account."
             )
         }
     }
@@ -4783,10 +4781,8 @@ struct SettingsView: View {
         switch normalizedMethod {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail)
         case "email":
             return SetupProfileStore.emailAccountID(emailUserEmail)
-                ?? SetupProfileStore.appleAccountID(appleUserID)
         default:
             return SetupProfileStore.emailAccountID(emailUserEmail)
                 ?? SetupProfileStore.appleAccountID(appleUserID)
