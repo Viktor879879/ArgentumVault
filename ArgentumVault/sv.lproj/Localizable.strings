@@ -166,8 +166,8 @@
 "pro.ai.daily_tip.on_track" = "Du ligger i fas. Du kan fortfarande spara cirka %@ idag.";
 "settings.account.sync_hint_pro" = "Pro: data synkas och sakerhetskopieras i kontots moln.";
 "settings.account.sync_hint_free" = "Free: basfunktioner ar tillgangliga, data lagras endast lokalt.";
-"pro.subtitle" = "Las upp molnsynk, avancerad analys, AI-rekommendationer och inga annonser.";
-"pro.upsell.short" = "Uppgradera till Pro: molnbackup, synk mellan enheter, djupare analys och inga annonser.";
+"pro.subtitle" = "Las upp avancerad analys, AI-rekommendationer och inga annonser.";
+"pro.upsell.short" = "Uppgradera till Pro: djupare analys, AI-rekommendationer och inga annonser.";
 "pro.feature.icloud_sync_backup" = "Molnsynk och backup mellan enheter";
 "pro.feature.no_ads" = "Inga annonser och mer skarmyta";
 "ad.inline.body" = "Plats for bannerannons. Uppgradera till Pro for att ta bort annonser.";
