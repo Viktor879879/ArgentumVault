@@ -293,12 +293,15 @@ private struct AppBootstrapView: View {
                 return
             }
 
-            if didRestore {
-                let backupContext = ModelContext(container)
+            let backupContext = ModelContext(container)
+            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                modelContext: backupContext,
+                didRestore: didRestore
+            ) {
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
                     accountIdentifier: accountIdentifier,
-                    force: true
+                    force: didRestore
                 )
             }
         }

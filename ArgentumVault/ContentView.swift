@@ -452,7 +452,9 @@ struct FirstLaunchSetupView: View {
                 initialMode: mode,
                 showsModePicker: false
             ) { session in
-                handleEmailAuthSuccess(session: session)
+                DispatchQueue.main.async {
+                    handleEmailAuthSuccess(session: session)
+                }
             }
         }
         .alert(
@@ -545,7 +547,7 @@ struct FirstLaunchSetupView: View {
         }
     }
 
-    private func handleEmailAuthSuccess(email: String) {
+    private func handleEmailAuthSuccess(session: EmailAuthSession) {
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -4599,8 +4601,10 @@ struct SettingsView: View {
                     .environmentObject(subscriptionManager)
             }
             .sheet(isPresented: $showEmailAuthSheet) {
-                EmailAuthSheetView(lang: uiLanguageCode) { email in
-                    handleEmailAuthSuccess(email: email)
+                EmailAuthSheetView(lang: uiLanguageCode) { session in
+                    DispatchQueue.main.async {
+                        handleEmailAuthSuccess(session: session)
+                    }
                 }
             }
             .alert(

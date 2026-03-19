@@ -10,6 +10,10 @@ private enum MonetizationConfig {
     // Temporary testing mode: cloud sync/backup stays available without Pro.
     // Switch to `true` before App Store release to put sync back behind the paywall.
     static let isCloudSyncPaywalled = false
+
+    // Automatic App Store restore may trigger repeated Apple Account password prompts.
+    // Keep it disabled during sync/account testing and rely on explicit Restore Purchases.
+    static let allowsAutomaticPurchaseRestore = false
 }
 
 enum PremiumFeature: CaseIterable, Hashable {
@@ -112,6 +116,7 @@ final class SubscriptionManager: ObservableObject {
         await loadProductsIfNeeded()
         await refreshEntitlements()
 
+        guard MonetizationConfig.allowsAutomaticPurchaseRestore else { return }
         guard !hasProAccess else { return }
         guard Self.shouldAttemptAuthorizationRestore() else { return }
 
@@ -132,7 +137,9 @@ final class SubscriptionManager: ObservableObject {
         }
 #endif
         var hasActivePro = await hasActiveProEntitlement()
-        if !hasActivePro, shouldAttemptAutomaticRestore() {
+        if MonetizationConfig.allowsAutomaticPurchaseRestore,
+           !hasActivePro,
+           shouldAttemptAutomaticRestore() {
             recordAutomaticRestoreAttempt()
             do {
                 try await AppStore.sync()

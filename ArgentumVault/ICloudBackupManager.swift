@@ -206,8 +206,10 @@ enum ICloudBackupManager {
         modelContext: ModelContext,
         didRestore: Bool
     ) -> Bool {
-        _ = modelContext
-        return didRestore
+        if didRestore {
+            return true
+        }
+        return hasCoreFinancialData(in: modelContext)
     }
 
     static func debugStatus(accountIdentifier: String) -> SnapshotDebugStatus {
@@ -293,6 +295,8 @@ enum ICloudBackupManager {
         let cloudErrorKey = lastCloudErrorDefaultsPrefix + bucket
         let storageErrorKey = storageCloudKitErrorKey
         let storageReasonKey = storageCloudKitReasonKey
+        let storageModeRequestedDefaultsKey = storageModeRequestedKey
+        let storageModeActiveDefaultsKey = storageModeActiveKey
 
         if cloudUploadTasks[bucket] != nil {
             pendingCloudUploads[bucket] = PendingCloudUpload(
@@ -333,16 +337,16 @@ enum ICloudBackupManager {
                 defaults.removeObject(forKey: cloudErrorKey)
                 defaults.removeObject(forKey: storageErrorKey)
                 defaults.removeObject(forKey: storageReasonKey)
-                defaults.set(true, forKey: storageModeRequestedKey)
-                defaults.set("cloud", forKey: storageModeActiveKey)
+                defaults.set(true, forKey: storageModeRequestedDefaultsKey)
+                defaults.set("cloud", forKey: storageModeActiveDefaultsKey)
             } catch {
                 let description = String(describing: error)
                 let defaults = UserDefaults.standard
                 defaults.set(description, forKey: cloudErrorKey)
                 defaults.set(description, forKey: storageErrorKey)
                 defaults.set(reasonCode(for: error), forKey: storageReasonKey)
-                defaults.set(true, forKey: storageModeRequestedKey)
-                defaults.set("local", forKey: storageModeActiveKey)
+                defaults.set(true, forKey: storageModeRequestedDefaultsKey)
+                defaults.set("local", forKey: storageModeActiveDefaultsKey)
             }
         }
     }
