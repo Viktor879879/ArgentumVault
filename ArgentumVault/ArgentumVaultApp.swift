@@ -7,7 +7,6 @@
 
 import SwiftUI
 import SwiftData
-import CloudKit
 import CryptoKit
 
 @main
@@ -23,6 +22,7 @@ private struct AppBootstrapView: View {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("appleUserID") private var bootstrapAppleUserID = ""
     @AppStorage("emailUserEmail") private var bootstrapEmailUserEmail = ""
+    @AppStorage("emailUserID") private var bootstrapEmailUserID = ""
     @AppStorage("authMethod") private var bootstrapAuthMethod = ""
     @State private var modelContainer: ModelContainer?
     @State private var isCloudStoreEnabled = false
@@ -66,6 +66,11 @@ private struct AppBootstrapView: View {
                 await switchContainerIfNeeded(refreshEntitlements: false)
             }
         }
+        .onChange(of: bootstrapEmailUserID) { _, _ in
+            Task { @MainActor in
+                await switchContainerIfNeeded(refreshEntitlements: false)
+            }
+        }
         .onChange(of: bootstrapAuthMethod) { _, _ in
             Task { @MainActor in
                 await switchContainerIfNeeded(refreshEntitlements: false)
@@ -90,6 +95,24 @@ private struct AppBootstrapView: View {
     @MainActor
     private func bootstrapIfNeeded() async {
         guard modelContainer == nil else { return }
+
+        let normalizedAppleID = bootstrapAppleUserID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEmail = bootstrapEmailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedEmailUserID = bootstrapEmailUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if (normalizedEmail.isEmpty || normalizedEmailUserID.isEmpty),
+           let restoredSession = await EmailAuthManager.restoreSession() {
+            bootstrapEmailUserEmail = restoredSession.email
+            bootstrapEmailUserID = restoredSession.userID
+            bootstrapAuthMethod = "email"
+        } else if !normalizedEmail.isEmpty, bootstrapAuthMethod.isEmpty {
+            bootstrapAuthMethod = "email"
+        } else if !normalizedAppleID.isEmpty, bootstrapAuthMethod.isEmpty {
+            bootstrapAuthMethod = "apple"
+        } else if bootstrapAuthMethod == "apple", normalizedAppleID.isEmpty, !normalizedEmail.isEmpty {
+            // Recover gracefully if method is stale but we still have a valid email session.
+            bootstrapAuthMethod = "email"
+        }
+
         await switchContainerIfNeeded(refreshEntitlements: true)
         guard modelContainer == nil else { return }
 
@@ -103,7 +126,10 @@ private struct AppBootstrapView: View {
         isCloudStoreEnabled = false
         activeStoreAccountIdentifier = accountIdentifier
         isSwitchingContainer = false
-        AppStorageDiagnostics.persist(requestedCloud: false, selection: fallbackSelection)
+        AppStorageDiagnostics.persist(
+            requestedCloud: StorageModePolicy.shouldRequestCloudKitStorage(),
+            selection: fallbackSelection
+        )
         configureICloudBackupPipeline(
             requestedCloud: false,
             usesCloudKit: false,
@@ -139,8 +165,8 @@ private struct AppBootstrapView: View {
                 _ = await SubscriptionManager.resolveProAccessForLaunch()
             }
         }
-        // Main SwiftData store is always local and account-scoped.
-        // CloudKit is used only by backup/restore pipeline to keep app accounts isolated.
+        // Main SwiftData store is local and account-scoped.
+        // Remote sync/backup is handled separately (Supabase for email accounts).
         let resolvedShouldUseCloudKit = false
         let resolvedShouldEnableCloudBackup = StorageModePolicy.shouldRequestCloudKitStorage()
         let resolvedAccountIdentifier = StorageModePolicy.currentAccountIdentifier()
@@ -170,8 +196,8 @@ private struct AppBootstrapView: View {
            resolvedAccountIdentifier == activeStoreAccountIdentifier {
             // Avoid container churn while CloudKit remains unavailable (or unchanged).
             // Recreating identical mode containers can invalidate live model objects and crash SwiftData views.
-            AppStorageDiagnostics.persist(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
-            scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
+            AppStorageDiagnostics.persist(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
+            scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
             configureICloudBackupPipeline(
                 requestedCloud: resolvedShouldEnableCloudBackup,
                 usesCloudKit: previousUsesCloudStore,
@@ -210,8 +236,8 @@ private struct AppBootstrapView: View {
         modelContainer = selection.container
         isCloudStoreEnabled = selection.usesCloudKit
         activeStoreAccountIdentifier = resolvedAccountIdentifier
-        AppStorageDiagnostics.persist(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
-        scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldUseCloudKit, selection: selection)
+        AppStorageDiagnostics.persist(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
+        scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
         configureICloudBackupPipeline(
             requestedCloud: resolvedShouldEnableCloudBackup,
             usesCloudKit: selection.usesCloudKit,
@@ -225,18 +251,10 @@ private struct AppBootstrapView: View {
 
     @MainActor
     private func scheduleCloudRetryIfNeeded(requestedCloud: Bool, selection: AppModelContainerSelection) {
+        _ = requestedCloud
+        _ = selection
         cloudRetryTask?.cancel()
         cloudRetryTask = nil
-
-        guard requestedCloud, !selection.usesCloudKit else {
-            return
-        }
-
-        cloudRetryTask = Task {
-            try? await Task.sleep(nanoseconds: 8_000_000_000)
-            guard !Task.isCancelled else { return }
-            await switchContainerIfNeeded(refreshEntitlements: false)
-        }
     }
 
     @MainActor
@@ -352,86 +370,6 @@ private struct AppBootstrapView: View {
         guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
         guard StorageModePolicy.currentCloudBackupAccountIdentifier() == accountIdentifier else { return false }
         return true
-    }
-}
-
-private struct CloudKitPreflightResult {
-    let canUseCloudKit: Bool
-    let reasonCode: String?
-}
-
-private enum CloudKitPreflight {
-    private static let containerIdentifier = "iCloud.com.argentumvault.app.x9w248m88b.vp20260219"
-
-    static func evaluate() async -> CloudKitPreflightResult {
-        await withTaskGroup(of: CloudKitPreflightResult.self) { group in
-            group.addTask {
-                await evaluateWithoutTimeout()
-            }
-            group.addTask {
-                // CloudKit account status may occasionally hang.
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                return CloudKitPreflightResult(canUseCloudKit: false, reasonCode: "network")
-            }
-            let result = await group.next() ?? CloudKitPreflightResult(canUseCloudKit: false, reasonCode: "network")
-            group.cancelAll()
-            return result
-        }
-    }
-
-    private static func evaluateWithoutTimeout() async -> CloudKitPreflightResult {
-        await withCheckedContinuation { continuation in
-            let container = CKContainer(identifier: containerIdentifier)
-            container.accountStatus { status, error in
-                if let reasonCode = reasonCode(from: error) {
-                    continuation.resume(returning: CloudKitPreflightResult(canUseCloudKit: false, reasonCode: reasonCode))
-                    return
-                }
-
-                switch status {
-                case .available:
-                    continuation.resume(returning: CloudKitPreflightResult(canUseCloudKit: true, reasonCode: nil))
-                case .noAccount:
-                    continuation.resume(returning: CloudKitPreflightResult(canUseCloudKit: false, reasonCode: "no_icloud_account"))
-                case .restricted:
-                    continuation.resume(returning: CloudKitPreflightResult(canUseCloudKit: false, reasonCode: "restricted"))
-                case .couldNotDetermine:
-                    continuation.resume(returning: CloudKitPreflightResult(canUseCloudKit: false, reasonCode: "network"))
-                case .temporarilyUnavailable:
-                    continuation.resume(returning: CloudKitPreflightResult(canUseCloudKit: false, reasonCode: "network"))
-                @unknown default:
-                    continuation.resume(returning: CloudKitPreflightResult(canUseCloudKit: false, reasonCode: "generic"))
-                }
-            }
-        }
-    }
-
-    private static func reasonCode(from error: Error?) -> String? {
-        guard let error else { return nil }
-        if let ckError = error as? CKError {
-            switch ckError.code {
-            case .notAuthenticated:
-                return "no_icloud_account"
-            case .permissionFailure:
-                return "restricted"
-            case .networkUnavailable, .networkFailure, .serviceUnavailable, .requestRateLimited:
-                return "network"
-            default:
-                break
-            }
-        }
-
-        let message = error.localizedDescription.lowercased()
-        if message.contains("not authenticated") || message.contains("icloud account") {
-            return "no_icloud_account"
-        }
-        if message.contains("restricted") || message.contains("permission") {
-            return "restricted"
-        }
-        if message.contains("network") || message.contains("unavailable") || message.contains("timed out") {
-            return "network"
-        }
-        return "generic"
     }
 }
 
@@ -854,7 +792,7 @@ private enum AppStorageDiagnostics {
 
     static func persist(requestedCloud: Bool, selection: AppModelContainerSelection) {
         let defaults = UserDefaults.standard
-        defaults.set(selection.usesCloudKit ? "cloud" : "local", forKey: activeModeKey)
+        defaults.set(requestedCloud ? "cloud" : "local", forKey: activeModeKey)
         defaults.set(requestedCloud, forKey: requestedCloudKey)
         if let error = selection.cloudKitErrorDescription, !error.isEmpty {
             defaults.set(error, forKey: cloudKitErrorKey)
@@ -872,6 +810,8 @@ private enum AppStorageDiagnostics {
 private enum StorageModePolicy {
     private static let appleUserIDKey = "appleUserID"
     private static let emailUserEmailKey = "emailUserEmail"
+    private static let emailUserIDKey = "emailUserID"
+    private static let authMethodKey = "authMethod"
 
     static func currentCloudBackupAccountIdentifier() -> String? {
         currentAppleAccountIdentifier()
@@ -890,8 +830,27 @@ private enum StorageModePolicy {
         let emailUserEmail = defaults.string(forKey: emailUserEmailKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
-        guard !emailUserEmail.isEmpty else { return nil }
-        return "email:\(emailUserEmail)"
+        if !emailUserEmail.isEmpty {
+            return "email:\(emailUserEmail)"
+        }
+        let emailUserID = defaults.string(forKey: emailUserIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if !emailUserID.isEmpty {
+            return "email_uid:\(emailUserID)"
+        }
+        return nil
+    }
+
+    private static func currentEmailCloudBackupIdentifier() -> String? {
+        let defaults = UserDefaults.standard
+        let emailUserID = defaults.string(forKey: emailUserIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if !emailUserID.isEmpty {
+            return "email_uid:\(emailUserID)"
+        }
+        return currentEmailAccountIdentifier()
     }
 
     static func currentAccountIdentifier() -> String? {

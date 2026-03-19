@@ -1,7 +1,8 @@
 import Foundation
 import SwiftData
 import CryptoKit
-import CloudKit
+import Supabase
+import PostgREST
 
 @MainActor
 enum ICloudBackupManager {
@@ -26,14 +27,13 @@ enum ICloudBackupManager {
     static let periodicIntervalNanoseconds: UInt64 = 900_000_000_000 // 15 minutes
 
     private static let schemaVersion = 1
-    private static let ubiquityContainerIdentifier = "iCloud.com.argentumvault.app.x9w248m88b.vp20260219"
-    private static let cloudKitContainerIdentifier = "iCloud.com.argentumvault.app.x9w248m88b.vp20260219"
-    private static let cloudSnapshotRecordType = "AVBackupSnapshot"
-    private static let cloudPayloadAssetField = "payloadAsset"
-    private static let cloudPayloadHashField = "payloadHash"
-    private static let cloudUpdatedAtField = "updatedAt"
-    private static let cloudSchemaVersionField = "schemaVersion"
-    private static let backupDirectoryName = "ArgentumVaultBackups"
+    private static let appSupportBackupFolder = "ArgentumVaultBackups"
+    private static let supabaseSnapshotsTable = "av_backup_snapshots"
+    private static let supabaseAccountBucketField = "account_bucket"
+    private static let supabasePayloadBase64Field = "payload_base64"
+    private static let supabasePayloadHashField = "payload_hash"
+    private static let supabaseSchemaVersionField = "schema_version"
+    private static let supabaseUpdatedAtField = "updated_at"
     private static let backupFileName = "snapshot.json"
     private static let lastHashDefaultsPrefix = "backup.icloud.last_hash."
     private static let lastCloudHashDefaultsPrefix = "backup.icloud.cloudkit.last_hash."
@@ -44,9 +44,58 @@ enum ICloudBackupManager {
     private static let lastCloudErrorDefaultsPrefix = "backup.icloud.cloudkit.last_error."
     private static let storageCloudKitErrorKey = "storage.cloudkit.last_error"
     private static let storageCloudKitReasonKey = "storage.cloudkit.last_reason_code"
+    private static let storageModeActiveKey = "storage.mode.active"
+    private static let storageModeRequestedKey = "storage.mode.requested_cloud"
+    private static let emailUserEmailKey = "emailUserEmail"
+    private static let emailUserIDKey = "emailUserID"
     private static let minimumAttemptInterval: TimeInterval = 5
     private static var cloudUploadTasks: [String: Task<Void, Never>] = [:]
     private static var pendingCloudUploads: [String: PendingCloudUpload] = [:]
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private struct SupabaseSnapshotUpsertRow: Encodable {
+        let account_bucket: String
+        let payload_base64: String
+        let payload_hash: String
+        let schema_version: Int
+        let updated_at: String
+    }
+
+    private struct SupabaseSnapshotSelectRow: Decodable {
+        let account_bucket: String
+        let payload_base64: String
+        let payload_hash: String?
+        let schema_version: Int?
+        let updated_at: String?
+    }
+
+    private struct SupabaseSnapshotUpdateRow: Encodable {
+        let payload_base64: String
+        let payload_hash: String
+        let schema_version: Int
+        let updated_at: String
+    }
+
+    private struct RemoteSnapshotPayload {
+        let payload: Data
+        let payloadHash: String?
+        let updatedAt: Date?
+    }
+
+    private enum BackupSyncRouteError: LocalizedError {
+        case emailAccountRequired
+
+        var errorDescription: String? {
+            switch self {
+            case .emailAccountRequired:
+                return "Cloud sync requires email authentication."
+            }
+        }
+    }
 
     static func backupIfNeeded(modelContext: ModelContext, accountIdentifier: String, force: Bool = false) {
         let backupURL = backupFileURL(for: accountIdentifier)
@@ -59,6 +108,12 @@ enum ICloudBackupManager {
             return
         }
         defaults.set(now, forKey: lastAttemptKey)
+
+        // Protect cloud snapshot from accidental overwrite with an empty state
+        // right after first launch / fresh install on a new device.
+        if !force, !hasCoreFinancialData(in: modelContext) {
+            return
+        }
 
         do {
             let snapshot = try makeSnapshot(from: modelContext)
@@ -87,7 +142,13 @@ enum ICloudBackupManager {
             defaults.set(payloadHash, forKey: lastHashKey)
             defaults.set(Date().timeIntervalSince1970, forKey: lastSuccessDefaultsPrefix + bucket)
             defaults.removeObject(forKey: lastErrorDefaultsKey)
-            uploadSnapshotToCloudKit(payload: payload, payloadHash: payloadHash, bucket: bucket, force: force)
+            uploadSnapshotToRemote(
+                payload: payload,
+                payloadHash: payloadHash,
+                bucket: bucket,
+                accountIdentifier: accountIdentifier,
+                force: force
+            )
         } catch {
             let description = String(describing: error)
             defaults.set(description, forKey: lastErrorDefaultsKey)
@@ -98,15 +159,23 @@ enum ICloudBackupManager {
 
     @discardableResult
     static func restoreIfNeeded(modelContext: ModelContext, accountIdentifier: String) async throws -> Bool {
-        guard !hasCoreFinancialData(in: modelContext) else { return false }
         let bucket = accountBucket(accountIdentifier)
+        let hasLocalCoreData = hasCoreFinancialData(in: modelContext)
 
-        let payload: Data
-        if let backupURL = backupFileURL(for: accountIdentifier),
-           FileManager.default.fileExists(atPath: backupURL.path) {
-            payload = try Data(contentsOf: backupURL)
-        } else if let cloudPayload = try await fetchSnapshotPayloadFromCloudKit(bucket: bucket) {
-            payload = cloudPayload
+        if let remoteSnapshot = try await fetchSnapshotPayloadFromRemote(
+            bucket: bucket,
+            accountIdentifier: accountIdentifier
+        ) {
+            if shouldSkipRemoteRestore(
+                remoteSnapshot: remoteSnapshot,
+                modelContext: modelContext,
+                bucket: bucket,
+                hasLocalCoreData: hasLocalCoreData
+            ) {
+                return false
+            }
+
+            let payload = remoteSnapshot.payload
             if let backupURL = backupFileURL(for: accountIdentifier) {
                 try? FileManager.default.createDirectory(
                     at: backupURL.deletingLastPathComponent(),
@@ -114,15 +183,23 @@ enum ICloudBackupManager {
                 )
                 try? payload.write(to: backupURL, options: .atomic)
             }
-        } else {
-            return false
+
+            let didRestore = try restorePayload(payload, modelContext: modelContext, bucket: bucket)
+            if didRestore {
+                UserDefaults.standard.removeObject(forKey: lastCloudErrorDefaultsPrefix + bucket)
+            }
+            return didRestore
         }
 
-        let didRestore = try restorePayload(payload, modelContext: modelContext, bucket: bucket)
-        if didRestore {
-            UserDefaults.standard.removeObject(forKey: lastCloudErrorDefaultsPrefix + bucket)
+        guard !hasLocalCoreData else {
+            return false
         }
-        return didRestore
+        guard let backupURL = backupFileURL(for: accountIdentifier),
+              FileManager.default.fileExists(atPath: backupURL.path) else {
+            return false
+        }
+        let localPayload = try Data(contentsOf: backupURL)
+        return try restorePayload(localPayload, modelContext: modelContext, bucket: bucket)
     }
 
     static func shouldForceBackupAfterRestoreAttempt(
@@ -182,13 +259,15 @@ enum ICloudBackupManager {
     }
 
     private static func backupFileURL(for accountIdentifier: String) -> URL? {
-        guard let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: ubiquityContainerIdentifier) else {
+        guard let appSupportURL = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first else {
             return nil
         }
         let bucket = accountBucket(accountIdentifier)
-        return containerURL
-            .appendingPathComponent("Documents", isDirectory: true)
-            .appendingPathComponent(backupDirectoryName, isDirectory: true)
+        return appSupportURL
+            .appendingPathComponent(appSupportBackupFolder, isDirectory: true)
             .appendingPathComponent(bucket, isDirectory: true)
             .appendingPathComponent(backupFileName, isDirectory: false)
     }
@@ -197,10 +276,11 @@ enum ICloudBackupManager {
         hashHex(string: accountIdentifier).prefix(24).lowercased()
     }
 
-    private static func uploadSnapshotToCloudKit(
+    private static func uploadSnapshotToRemote(
         payload: Data,
         payloadHash: String,
         bucket: String,
+        accountIdentifier: String,
         force: Bool
     ) {
         let defaults = UserDefaults.standard
@@ -228,10 +308,11 @@ enum ICloudBackupManager {
                 Task { @MainActor in
                     cloudUploadTasks[bucket] = nil
                     if let pending = pendingCloudUploads.removeValue(forKey: bucket) {
-                        uploadSnapshotToCloudKit(
+                        uploadSnapshotToRemote(
                             payload: pending.payload,
                             payloadHash: pending.payloadHash,
                             bucket: bucket,
+                            accountIdentifier: accountIdentifier,
                             force: pending.force
                         )
                     }
@@ -239,7 +320,12 @@ enum ICloudBackupManager {
             }
             guard !Task.isCancelled else { return }
             do {
-                try await saveSnapshotPayloadToCloudKit(payload: payload, payloadHash: payloadHash, bucket: bucket)
+                try await saveSnapshotPayloadToRemote(
+                    payload: payload,
+                    payloadHash: payloadHash,
+                    bucket: bucket,
+                    accountIdentifier: accountIdentifier
+                )
                 guard !Task.isCancelled else { return }
                 let defaults = UserDefaults.standard
                 defaults.set(payloadHash, forKey: lastCloudHashKey)
@@ -247,164 +333,284 @@ enum ICloudBackupManager {
                 defaults.removeObject(forKey: cloudErrorKey)
                 defaults.removeObject(forKey: storageErrorKey)
                 defaults.removeObject(forKey: storageReasonKey)
+                defaults.set(true, forKey: storageModeRequestedKey)
+                defaults.set("cloud", forKey: storageModeActiveKey)
             } catch {
                 let description = String(describing: error)
                 let defaults = UserDefaults.standard
                 defaults.set(description, forKey: cloudErrorKey)
                 defaults.set(description, forKey: storageErrorKey)
                 defaults.set(reasonCode(for: error), forKey: storageReasonKey)
+                defaults.set(true, forKey: storageModeRequestedKey)
+                defaults.set("local", forKey: storageModeActiveKey)
             }
         }
     }
 
-    private static func saveSnapshotPayloadToCloudKit(
+    private static func saveSnapshotPayloadToRemote(
+        payload: Data,
+        payloadHash: String,
+        bucket: String,
+        accountIdentifier: String
+    ) async throws {
+        guard shouldUseSupabaseSync(for: accountIdentifier) else {
+            throw BackupSyncRouteError.emailAccountRequired
+        }
+
+        try await saveSnapshotPayloadToSupabase(
+            payload: payload,
+            payloadHash: payloadHash,
+            bucket: bucket
+        )
+    }
+
+    private static func saveSnapshotPayloadToSupabase(
         payload: Data,
         payloadHash: String,
         bucket: String
     ) async throws {
-        let container = CKContainer(identifier: cloudKitContainerIdentifier)
-        let database = container.privateCloudDatabase
-        let recordID = CKRecord.ID(recordName: "snapshot-\(bucket)")
+        let client = try EmailAuthManager.syncClient()
+        let updatedAt = iso8601Formatter.string(from: Date())
+        let row = SupabaseSnapshotUpsertRow(
+            account_bucket: bucket,
+            payload_base64: payload.base64EncodedString(),
+            payload_hash: payloadHash,
+            schema_version: schemaVersion,
+            updated_at: updatedAt
+        )
+        let updateRow = SupabaseSnapshotUpdateRow(
+            payload_base64: row.payload_base64,
+            payload_hash: row.payload_hash,
+            schema_version: row.schema_version,
+            updated_at: row.updated_at
+        )
 
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("snapshot-\(UUID().uuidString).json", isDirectory: false)
-        try payload.write(to: tempURL, options: .atomic)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        for attempt in 0..<3 {
-            do {
-                let record = try await fetchOrCreateRecord(
-                    in: database,
-                    recordID: recordID
-                )
-                applySnapshotFields(
-                    to: record,
-                    payloadHash: payloadHash,
-                    tempURL: tempURL
-                )
-                _ = try await saveRecord(record, in: database)
-                return
-            } catch let ckError as CKError where ckError.code == .serverRecordChanged {
-                if let serverRecord = ckError.serverRecord {
-                    applySnapshotFields(
-                        to: serverRecord,
-                        payloadHash: payloadHash,
-                        tempURL: tempURL
-                    )
-                    _ = try await saveRecord(serverRecord, in: database)
-                    return
-                }
-                if attempt == 2 { throw ckError }
-            } catch {
-                if attempt == 2 { throw error }
-            }
-        }
-    }
-
-    private static func fetchSnapshotPayloadFromCloudKit(bucket: String) async throws -> Data? {
-        let container = CKContainer(identifier: cloudKitContainerIdentifier)
-        let database = container.privateCloudDatabase
-        let recordID = CKRecord.ID(recordName: "snapshot-\(bucket)")
         do {
-            guard let record = try await fetchRecord(with: recordID, in: database) else {
-                return nil
+            _ = try await client
+                .from(supabaseSnapshotsTable)
+                .upsert(
+                    row,
+                    onConflict: supabaseAccountBucketField,
+                    returning: .minimal
+                )
+                .execute()
+            return
+        } catch let postgrestError as PostgrestError {
+            guard shouldFallbackFromUpsert(error: postgrestError) else {
+                throw postgrestError
             }
+        }
 
-            if let asset = record[cloudPayloadAssetField] as? CKAsset,
-               let fileURL = asset.fileURL,
-               FileManager.default.fileExists(atPath: fileURL.path) {
-                return try Data(contentsOf: fileURL)
-            }
+        let existing: PostgrestResponse<[SupabaseSnapshotSelectRow]> = try await client
+            .from(supabaseSnapshotsTable)
+            .select(supabaseAccountBucketField)
+            .eq(supabaseAccountBucketField, value: bucket)
+            .limit(1)
+            .execute()
 
+        if existing.value.isEmpty {
+            _ = try await client
+                .from(supabaseSnapshotsTable)
+                .insert(row, returning: .minimal)
+                .execute()
+        } else {
+            _ = try await client
+                .from(supabaseSnapshotsTable)
+                .update(updateRow, returning: .minimal)
+                .eq(supabaseAccountBucketField, value: bucket)
+                .execute()
+        }
+    }
+
+    private static func fetchSnapshotPayloadFromRemote(
+        bucket: String,
+        accountIdentifier: String
+    ) async throws -> RemoteSnapshotPayload? {
+        guard shouldUseSupabaseSync(for: accountIdentifier) else {
             return nil
-        } catch {
-            let defaults = UserDefaults.standard
-            defaults.set(String(describing: error), forKey: storageCloudKitErrorKey)
-            defaults.set(reasonCode(for: error), forKey: storageCloudKitReasonKey)
-            throw error
         }
-    }
 
-    private static func fetchOrCreateRecord(
-        in database: CKDatabase,
-        recordID: CKRecord.ID
-    ) async throws -> CKRecord {
-        if let existing = try await fetchRecord(with: recordID, in: database) {
-            return existing
+        if let primarySnapshot = try await fetchSnapshotPayloadFromSupabase(bucket: bucket) {
+            return primarySnapshot
         }
-        return CKRecord(recordType: cloudSnapshotRecordType, recordID: recordID)
-    }
 
-    private static func applySnapshotFields(
-        to record: CKRecord,
-        payloadHash: String,
-        tempURL: URL
-    ) {
-        record[cloudPayloadHashField] = payloadHash as CKRecordValue
-        record[cloudUpdatedAtField] = Date() as CKRecordValue
-        record[cloudSchemaVersionField] = NSNumber(value: schemaVersion)
-        record[cloudPayloadAssetField] = CKAsset(fileURL: tempURL)
-    }
-
-    private static func fetchRecord(
-        with recordID: CKRecord.ID,
-        in database: CKDatabase
-    ) async throws -> CKRecord? {
-        try await withCheckedThrowingContinuation { continuation in
-            database.fetch(withRecordID: recordID) { record, error in
-                if let ckError = error as? CKError, ckError.code == .unknownItem {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                continuation.resume(returning: record)
+        for legacyBucket in legacySupabaseBuckets(
+            for: accountIdentifier,
+            excluding: bucket
+        ) {
+            if let legacySnapshot = try await fetchSnapshotPayloadFromSupabase(bucket: legacyBucket) {
+                return legacySnapshot
             }
         }
+
+        return nil
     }
 
-    private static func saveRecord(
-        _ record: CKRecord,
-        in database: CKDatabase
-    ) async throws -> CKRecord {
-        try await withCheckedThrowingContinuation { continuation in
-            let operation = CKModifyRecordsOperation(
-                recordsToSave: [record],
-                recordIDsToDelete: nil
+    private static func fetchSnapshotPayloadFromSupabase(bucket: String) async throws -> RemoteSnapshotPayload? {
+        let client = try EmailAuthManager.syncClient()
+        let response: PostgrestResponse<[SupabaseSnapshotSelectRow]> = try await client
+            .from(supabaseSnapshotsTable)
+            .select(
+                "\(supabaseAccountBucketField),\(supabasePayloadBase64Field),\(supabasePayloadHashField),\(supabaseSchemaVersionField),\(supabaseUpdatedAtField)"
             )
-            operation.savePolicy = .changedKeys
-            operation.isAtomic = true
-            operation.modifyRecordsCompletionBlock = { savedRecords, _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let savedRecord = savedRecords?.first {
-                    continuation.resume(returning: savedRecord)
-                } else {
-                    continuation.resume(throwing: CKError(.internalError))
-                }
-            }
-            database.add(operation)
+            .eq(supabaseAccountBucketField, value: bucket)
+            .limit(1)
+            .execute()
+
+        let rows = response.value
+        guard let row = rows.first else {
+            return nil
         }
+
+        guard let payload = Data(base64Encoded: row.payload_base64) else {
+            throw NSError(
+                domain: "ArgentumVault.SupabaseBackup",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid backup payload encoding in Supabase."]
+            )
+        }
+
+        return RemoteSnapshotPayload(
+            payload: payload,
+            payloadHash: row.payload_hash,
+            updatedAt: parseServerDate(row.updated_at)
+        )
+    }
+
+    private static func shouldUseSupabaseSync(for accountIdentifier: String) -> Bool {
+        accountIdentifier.hasPrefix("email:") || accountIdentifier.hasPrefix("email_uid:")
+    }
+
+    private static func legacySupabaseBuckets(
+        for accountIdentifier: String,
+        excluding primaryBucket: String
+    ) -> [String] {
+        let defaults = UserDefaults.standard
+        let normalizedEmail = defaults.string(forKey: emailUserEmailKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let normalizedUserID = defaults.string(forKey: emailUserIDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+
+        var buckets: [String] = []
+        if accountIdentifier.hasPrefix("email_uid:"), !normalizedEmail.isEmpty {
+            buckets.append(accountBucket("email:\(normalizedEmail)"))
+        }
+        if accountIdentifier.hasPrefix("email:"), !normalizedUserID.isEmpty {
+            buckets.append(accountBucket("email_uid:\(normalizedUserID)"))
+        }
+
+        var seen: Set<String> = [primaryBucket]
+        return buckets.filter { bucket in
+            guard !seen.contains(bucket) else { return false }
+            seen.insert(bucket)
+            return true
+        }
+    }
+
+    private static func shouldFallbackFromUpsert(error: PostgrestError) -> Bool {
+        let code = error.code?.lowercased() ?? ""
+        let message = error.message.lowercased()
+        let detail = error.detail?.lowercased() ?? ""
+        let combined = "\(code) \(message) \(detail)"
+        return combined.contains("42p10")
+            || combined.contains("on conflict")
+            || combined.contains("no unique")
+            || combined.contains("exclusion constraint")
+    }
+
+    private static func shouldSkipRemoteRestore(
+        remoteSnapshot: RemoteSnapshotPayload,
+        modelContext: ModelContext,
+        bucket: String,
+        hasLocalCoreData: Bool
+    ) -> Bool {
+        guard hasLocalCoreData else { return false }
+
+        if let localPayload = try? encodeSnapshotPayload(from: modelContext),
+           let remoteHash = remoteSnapshot.payloadHash {
+            let localHash = hashHex(data: localPayload)
+            if localHash == remoteHash {
+                return true
+            }
+        }
+
+        let defaults = UserDefaults.standard
+        let lastCloudSuccess = dateFromDefaults(defaults, key: lastCloudSuccessDefaultsPrefix + bucket)
+        let lastCloudHash = defaults.string(forKey: lastCloudHashDefaultsPrefix + bucket)
+
+        guard let lastCloudSuccess else {
+            // Device has local data but has never synced this account: prefer remote snapshot.
+            return false
+        }
+
+        if let remoteUpdatedAt = remoteSnapshot.updatedAt,
+           remoteUpdatedAt.timeIntervalSince1970 > (lastCloudSuccess.timeIntervalSince1970 + 1) {
+            return false
+        }
+
+        if let remoteHash = remoteSnapshot.payloadHash,
+           remoteHash != lastCloudHash {
+            return false
+        }
+
+        return true
+    }
+
+    private static func encodeSnapshotPayload(from context: ModelContext) throws -> Data {
+        let snapshot = try makeSnapshot(from: context)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(snapshot)
+    }
+
+    private static func parseServerDate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        if let withFractional = iso8601Formatter.date(from: raw) {
+            return withFractional
+        }
+        let fallback = ISO8601DateFormatter()
+        fallback.formatOptions = [.withInternetDateTime]
+        return fallback.date(from: raw)
     }
 
     nonisolated private static func reasonCode(for error: Error) -> String {
-        if let ckError = error as? CKError {
-            switch ckError.code {
-            case .notAuthenticated:
-                return "no_icloud_account"
-            case .permissionFailure:
-                return "restricted"
-            case .networkUnavailable, .networkFailure, .serviceUnavailable, .requestRateLimited:
-                return "network"
-            default:
-                return "model_issue"
+        if let routeError = error as? BackupSyncRouteError {
+            switch routeError {
+            case .emailAccountRequired:
+                return "email_account_required"
             }
         }
+
+        if let postgrestError = error as? PostgrestError {
+            let pgCode = postgrestError.code?.lowercased() ?? ""
+            let pgMessage = postgrestError.message.lowercased()
+            let pgDetail = postgrestError.detail?.lowercased() ?? ""
+            let combined = "\(pgCode) \(pgMessage) \(pgDetail)"
+
+            if combined.contains("relation") && combined.contains("does not exist") {
+                return "supabase_schema"
+            }
+            if combined.contains("jwt")
+                || combined.contains("auth")
+                || combined.contains("permission denied")
+                || combined.contains("row-level security")
+            {
+                return "restricted"
+            }
+            if combined.contains("network")
+                || combined.contains("timeout")
+                || combined.contains("temporarily unavailable")
+            {
+                return "network"
+            }
+            return "model_issue"
+        }
         let message = String(describing: error).lowercased()
-        if message.contains("not authenticated") || message.contains("no account") {
-            return "no_icloud_account"
+        if message.contains("email authentication") {
+            return "email_account_required"
         }
         if message.contains("permission") || message.contains("restricted") || message.contains("forbidden") {
             return "restricted"

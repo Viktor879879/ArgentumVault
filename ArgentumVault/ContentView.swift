@@ -11,7 +11,6 @@ import PhotosUI
 import Charts
 import UniformTypeIdentifiers
 import AuthenticationServices
-import CryptoKit
 import Security
 
 #if canImport(UIKit)
@@ -72,6 +71,7 @@ struct ContentView: View {
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
+    @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
 #if DEBUG
     @AppStorage("debugResetFirstLaunchOnce_v5") private var debugResetFirstLaunchOnce = true
@@ -164,6 +164,7 @@ struct ContentView: View {
                 appleUserEmail = ""
                 appleUserName = ""
                 emailUserEmail = ""
+                emailUserID = ""
                 authMethod = ""
                 debugResetFirstLaunchOnce = false
             }
@@ -177,6 +178,8 @@ struct ContentView: View {
                     authMethod = "apple"
                 } else if !emailUserEmail.isEmpty {
                     authMethod = "email"
+                } else if !appleUserID.isEmpty {
+                    authMethod = "apple"
                 }
             }
             if appCountryCode.isEmpty {
@@ -302,6 +305,7 @@ struct FirstLaunchSetupView: View {
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
+    @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
@@ -447,8 +451,8 @@ struct FirstLaunchSetupView: View {
                 lang: uiLanguageCode,
                 initialMode: mode,
                 showsModePicker: false
-            ) { email in
-                handleEmailAuthSuccess(email: email)
+            ) { session in
+                handleEmailAuthSuccess(session: session)
             }
         }
         .alert(
@@ -545,11 +549,12 @@ struct FirstLaunchSetupView: View {
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
-        emailUserEmail = email
+        emailUserEmail = session.email
+        emailUserID = session.userID
         authMethod = "email"
         SessionEvents.postAccountSessionDidChange()
         triggerProRestoreAfterAuthorization()
-        if let accountID = SetupProfileStore.emailAccountID(email),
+        if let accountID = SetupProfileStore.emailAccountID(session.email, userID: session.userID),
            restoreSetupProfileIfPresent(for: accountID) {
             return
         }
@@ -4168,6 +4173,7 @@ struct SettingsView: View {
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
+    @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
 
@@ -4266,7 +4272,7 @@ struct SettingsView: View {
                             }
                         }
                         Button(role: .destructive) {
-                            clearAccountSession()
+                            signOutCurrentAccount()
                         } label: {
                             Text(L10n.text("settings.account.sign_out", lang: uiLanguageCode))
                                 .foregroundStyle(.red)
@@ -4278,7 +4284,7 @@ struct SettingsView: View {
                 }
 #if DEBUG
                 if isAccountConnected {
-                    Section("CloudKit Debug") {
+                    Section("Sync Debug") {
                         if let status = cloudDebugStatus {
                             Text("Bucket: \(status.accountBucket)")
                                 .font(.caption2)
@@ -4302,7 +4308,7 @@ struct SettingsView: View {
                             Text("Last local backup: \(debugDateText(status.lastLocalSuccess))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("Last CloudKit upload: \(debugDateText(status.lastCloudSuccess))")
+                            Text("Last remote upload: \(debugDateText(status.lastCloudSuccess))")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
 
@@ -4327,7 +4333,7 @@ struct SettingsView: View {
                             refreshCloudDebugStatus()
                         } label: {
                             HStack {
-                                Text("Refresh cloud status")
+                                Text("Refresh sync status")
                                 Spacer()
                             }
                             .contentShape(Rectangle())
@@ -4338,7 +4344,7 @@ struct SettingsView: View {
                             forceCloudBackupNow()
                         } label: {
                             HStack {
-                                Text("Force cloud backup now")
+                                Text("Force backup now")
                                 Spacer()
                                 if isCloudDebugBusy {
                                     ProgressView()
@@ -4353,7 +4359,7 @@ struct SettingsView: View {
                             restoreFromCloudNow()
                         } label: {
                             HStack {
-                                Text("Try restore from cloud")
+                                Text("Try restore from backup")
                                 Spacer()
                                 if isCloudDebugBusy {
                                     ProgressView()
@@ -4666,6 +4672,8 @@ struct SettingsView: View {
         let reasonCode = defaults.string(forKey: "storage.cloudkit.last_reason_code") ?? "generic"
         let localizationKey: String
         switch reasonCode {
+        case "email_account_required":
+            localizationKey = "settings.storage.reason.email_account_required"
         case "no_icloud_account":
             localizationKey = "settings.storage.reason.no_icloud_account"
         case "restricted":
@@ -4770,15 +4778,26 @@ struct SettingsView: View {
         appleUserEmail = ""
         appleUserName = ""
         emailUserEmail = ""
+        emailUserID = ""
         authMethod = ""
         SessionEvents.postAccountSessionDidChange()
     }
 
-    private func handleEmailAuthSuccess(email: String) {
+    private func signOutCurrentAccount() {
+        Task {
+            await EmailAuthManager.signOutCurrentSession()
+            await MainActor.run {
+                clearAccountSession()
+            }
+        }
+    }
+
+    private func handleEmailAuthSuccess(session: EmailAuthSession) {
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
-        emailUserEmail = email
+        emailUserEmail = session.email
+        emailUserID = session.userID
         authMethod = "email"
         SessionEvents.postAccountSessionDidChange()
         triggerProRestoreAfterAuthorization()
@@ -4840,7 +4859,7 @@ struct SettingsView: View {
             refreshCloudDebugStatus()
             finishCloudDebugOperation(
                 token: token,
-                message: "Forced backup finished. Refresh CloudKit Dashboard."
+                message: "Forced backup finished. Refresh remote dashboard."
             )
         }
     }
@@ -4850,7 +4869,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
-        guard let token = startCloudDebugOperation(message: "Trying restore from cloud...") else {
+        guard let token = startCloudDebugOperation(message: "Trying restore from remote...") else {
             return
         }
         Task { @MainActor in
@@ -4862,8 +4881,8 @@ struct SettingsView: View {
             finishCloudDebugOperation(
                 token: token,
                 message: restored
-                    ? "Restore completed from cloud snapshot."
-                    : "No cloud snapshot found for this account."
+                    ? "Restore completed from remote snapshot."
+                    : "No remote snapshot found for this account."
             )
         }
     }
@@ -5308,7 +5327,7 @@ struct OnboardingView: View {
     }
 }
 
-private enum EmailAuthMode: String, CaseIterable, Identifiable {
+enum EmailAuthMode: String, CaseIterable, Identifiable {
     case signIn
     case signUp
 
@@ -5338,7 +5357,7 @@ private struct EmailAuthSheetView: View {
 
     let lang: String
     let showsModePicker: Bool
-    let onSuccess: (String) -> Void
+    let onSuccess: (EmailAuthSession) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var mode: EmailAuthMode
@@ -5354,7 +5373,7 @@ private struct EmailAuthSheetView: View {
         lang: String,
         initialMode: EmailAuthMode = .signIn,
         showsModePicker: Bool = true,
-        onSuccess: @escaping (String) -> Void
+        onSuccess: @escaping (EmailAuthSession) -> Void
     ) {
         self.lang = lang
         self.showsModePicker = showsModePicker
@@ -5391,7 +5410,6 @@ private struct EmailAuthSheetView: View {
 
                 Section(L10n.text("settings.account.password", lang: lang)) {
                     SecureField(L10n.text("settings.account.password", lang: lang), text: $password)
-                        .id("email-auth-password")
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .textContentType(mode == .signUp ? .newPassword : .password)
@@ -5406,7 +5424,6 @@ private struct EmailAuthSheetView: View {
                         }
                     if mode == .signUp {
                         SecureField(L10n.text("settings.account.confirm_password", lang: lang), text: $confirmPassword)
-                            .id("email-auth-confirm-password")
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .textContentType(.newPassword)
@@ -5449,21 +5466,32 @@ private struct EmailAuthSheetView: View {
 
     private func submit() {
         guard !isSubmitting else { return }
+        let requestMode = mode
+        let requestEmail = email
+        let requestPassword = password
+        let requestConfirmPassword = confirmPassword
         isSubmitting = true
-        defer { isSubmitting = false }
 
-        do {
-            let normalizedEmail = try EmailAuthManager.authenticate(
-                mode: mode,
-                email: email,
-                password: password,
-                confirmPassword: confirmPassword
-            )
-            onSuccess(normalizedEmail)
-            dismiss()
-        } catch {
-            errorMessage = localizedEmailAuthError(error)
-            showError = true
+        Task {
+            do {
+                let authSession = try await EmailAuthManager.authenticate(
+                    mode: requestMode,
+                    email: requestEmail,
+                    password: requestPassword,
+                    confirmPassword: requestConfirmPassword
+                )
+                await MainActor.run {
+                    isSubmitting = false
+                    onSuccess(authSession)
+                    dismiss()
+                }
+            } catch {
+                await MainActor.run {
+                    isSubmitting = false
+                    errorMessage = localizedEmailAuthError(error)
+                    showError = true
+                }
+            }
         }
     }
 
@@ -5484,26 +5512,23 @@ private struct EmailAuthSheetView: View {
             return L10n.text("settings.account.error_email_not_found", lang: lang)
         case .invalidCredentials:
             return L10n.text("settings.account.error_invalid_credentials", lang: lang)
+        case .emailNotConfirmed:
+            return L10n.text("settings.account.error_email_not_confirmed", lang: lang)
         case .storageFailure:
             return L10n.text("settings.account.error_storage", lang: lang)
         }
     }
 }
 
-private enum EmailAuthError: Error {
+enum EmailAuthError: Error {
     case invalidEmail
     case passwordTooShort
     case passwordMismatch
     case accountAlreadyExists
     case accountNotFound
     case invalidCredentials
+    case emailNotConfirmed
     case storageFailure
-}
-
-private struct StoredEmailCredentials: Codable {
-    let email: String
-    let saltBase64: String
-    let hashBase64: String
 }
 
 private struct StoredSetupProfile: Codable {
@@ -5522,10 +5547,17 @@ private enum SetupProfileStore {
         return "apple:\(normalized)"
     }
 
-    static func emailAccountID(_ email: String) -> String? {
+    static func emailAccountID(_ email: String, userID: String? = nil) -> String? {
+        let normalizedUserID = userID?.trimmed.lowercased() ?? ""
+        if !normalizedUserID.isEmpty {
+            return "email_uid:\(normalizedUserID)"
+        }
+
         let normalized = email.trimmed.lowercased()
-        guard !normalized.isEmpty else { return nil }
-        return "email:\(normalized)"
+        if !normalized.isEmpty {
+            return "email:\(normalized)"
+        }
+        return nil
     }
 
     static func load(for accountID: String) throws -> StoredSetupProfile? {
@@ -5595,192 +5627,6 @@ private enum SetupProfileStore {
     }
 }
 
-private enum EmailAuthManager {
-    private static let service = "com.argentumvault.app.emailauth"
-    private static let legacyPrimaryAccount = "primary"
-
-    static func authenticate(
-        mode: EmailAuthMode,
-        email: String,
-        password: String,
-        confirmPassword: String
-    ) throws -> String {
-        switch mode {
-        case .signIn:
-            return try signIn(email: email, password: password)
-        case .signUp:
-            return try signUp(email: email, password: password, confirmPassword: confirmPassword)
-        }
-    }
-
-    private static func signUp(email: String, password: String, confirmPassword: String) throws -> String {
-        let normalizedEmail = try normalized(email: email)
-        try validate(password: password)
-        guard password == confirmPassword else {
-            throw EmailAuthError.passwordMismatch
-        }
-
-        try migrateLegacyPrimaryCredentialsIfNeeded()
-
-        if try loadCredentials(for: normalizedEmail) != nil {
-            throw EmailAuthError.accountAlreadyExists
-        }
-
-        let salt = try randomSalt(length: 16)
-        let hash = passwordHash(password: password, salt: salt)
-        let credentials = StoredEmailCredentials(
-            email: normalizedEmail,
-            saltBase64: salt.base64EncodedString(),
-            hashBase64: hash.base64EncodedString()
-        )
-        try saveCredentials(credentials, for: normalizedEmail)
-        return normalizedEmail
-    }
-
-    private static func signIn(email: String, password: String) throws -> String {
-        let normalizedEmail = try normalized(email: email)
-        try migrateLegacyPrimaryCredentialsIfNeeded()
-
-        guard let credentials = try loadCredentials(for: normalizedEmail) else {
-            throw EmailAuthError.accountNotFound
-        }
-
-        guard let salt = Data(base64Encoded: credentials.saltBase64),
-              let expectedHash = Data(base64Encoded: credentials.hashBase64) else {
-            throw EmailAuthError.storageFailure
-        }
-
-        let hash = passwordHash(password: password, salt: salt)
-        guard hash == expectedHash else {
-            throw EmailAuthError.invalidCredentials
-        }
-        return normalizedEmail
-    }
-
-    private static func normalized(email: String) throws -> String {
-        let normalized = email.trimmed.lowercased()
-        guard normalized.contains("@"), normalized.contains(".") else {
-            throw EmailAuthError.invalidEmail
-        }
-        return normalized
-    }
-
-    private static func validate(password: String) throws {
-        guard password.count >= 6 else {
-            throw EmailAuthError.passwordTooShort
-        }
-    }
-
-    private static func passwordHash(password: String, salt: Data) -> Data {
-        var payload = Data()
-        payload.append(salt)
-        payload.append(contentsOf: password.utf8)
-        return Data(SHA256.hash(data: payload))
-    }
-
-    private static func randomSalt(length: Int) throws -> Data {
-        var bytes = [UInt8](repeating: 0, count: length)
-        let status = SecRandomCopyBytes(kSecRandomDefault, length, &bytes)
-        guard status == errSecSuccess else {
-            throw EmailAuthError.storageFailure
-        }
-        return Data(bytes)
-    }
-
-    private static func migrateLegacyPrimaryCredentialsIfNeeded() throws {
-        guard let legacy = try loadLegacyPrimaryCredentials() else { return }
-        if try loadCredentials(for: legacy.email) == nil {
-            try saveCredentials(legacy, for: legacy.email)
-        }
-        try deleteLegacyPrimaryCredentials()
-    }
-
-    private static func loadLegacyPrimaryCredentials() throws -> StoredEmailCredentials? {
-        try loadCredentials(forKeychainAccount: legacyPrimaryAccount)
-    }
-
-    private static func deleteLegacyPrimaryCredentials() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: legacyPrimaryAccount
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw EmailAuthError.storageFailure
-        }
-    }
-
-    private static func loadCredentials(for email: String) throws -> StoredEmailCredentials? {
-        try loadCredentials(forKeychainAccount: email)
-    }
-
-    private static func loadCredentials(forKeychainAccount account: String) throws -> StoredEmailCredentials? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecItemNotFound {
-            return nil
-        }
-        guard status == errSecSuccess, let data = item as? Data else {
-            throw EmailAuthError.storageFailure
-        }
-        do {
-            return try JSONDecoder().decode(StoredEmailCredentials.self, from: data)
-        } catch {
-            throw EmailAuthError.storageFailure
-        }
-    }
-
-    private static func saveCredentials(_ credentials: StoredEmailCredentials, for keychainAccount: String) throws {
-        let data: Data
-        do {
-            data = try JSONEncoder().encode(credentials)
-        } catch {
-            throw EmailAuthError.storageFailure
-        }
-
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: keychainAccount
-        ]
-        let updateAttributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
-        ]
-
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        if status == errSecSuccess {
-            let updateStatus = SecItemUpdate(query as CFDictionary, updateAttributes as CFDictionary)
-            guard updateStatus == errSecSuccess else {
-                throw EmailAuthError.storageFailure
-            }
-            return
-        }
-
-        if status == errSecItemNotFound {
-            var addQuery = query
-            for (key, value) in updateAttributes {
-                addQuery[key] = value
-            }
-            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-            guard addStatus == errSecSuccess else {
-                throw EmailAuthError.storageFailure
-            }
-            return
-        }
-
-        throw EmailAuthError.storageFailure
-    }
-}
 
 private extension String {
     var trimmed: String {

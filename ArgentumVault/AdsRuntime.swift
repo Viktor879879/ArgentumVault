@@ -270,13 +270,11 @@ enum AdsDefaults {
 
     private static func bundledBannerUnitID(for slot: AdSlot) -> String? {
         if let slotKey = slotInfoKeyBySlot[slot],
-           let slotConfigured = Bundle.main.object(forInfoDictionaryKey: slotKey) as? String,
-           let slotTrimmed = slotConfigured.trimmedNonEmpty {
+           let slotTrimmed = infoString(for: slotKey) {
             return isGoogleSampleBannerUnitID(slotTrimmed) ? nil : slotTrimmed
         }
 
-        if let genericConfigured = Bundle.main.object(forInfoDictionaryKey: "GADBannerAdUnitID") as? String,
-           let genericTrimmed = genericConfigured.trimmedNonEmpty {
+        if let genericTrimmed = infoString(for: "GADBannerAdUnitID") {
             return isGoogleSampleBannerUnitID(genericTrimmed) ? nil : genericTrimmed
         }
 
@@ -288,8 +286,7 @@ enum AdsDefaults {
     }
 
     static var remoteConfigURL: URL? {
-        guard let configured = Bundle.main.object(forInfoDictionaryKey: "AdsRemoteConfigURL") as? String,
-              let trimmed = configured.trimmedNonEmpty,
+        guard let trimmed = infoString(for: "AdsRemoteConfigURL"),
               let url = URL(string: trimmed)
         else {
             return nil
@@ -301,7 +298,22 @@ enum AdsDefaults {
         if let numericValue = Bundle.main.object(forInfoDictionaryKey: "AdsRemoteConfigFetchIntervalSeconds") as? NSNumber {
             return max(300, numericValue.doubleValue)
         }
+        if let stringValue = infoString(for: "AdsRemoteConfigFetchIntervalSeconds"),
+           let interval = TimeInterval(stringValue) {
+            return max(300, interval)
+        }
         return 3600
+    }
+
+    private static func infoString(for key: String) -> String? {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: key) as? String else {
+            return nil
+        }
+        return raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            .replacingOccurrences(of: "\\/", with: "/")
+            .trimmedNonEmpty
     }
 }
 

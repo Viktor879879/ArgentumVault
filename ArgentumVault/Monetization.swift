@@ -6,6 +6,12 @@ import UIKit
 import GoogleMobileAds
 #endif
 
+private enum MonetizationConfig {
+    // Temporary testing mode: cloud sync/backup stays available without Pro.
+    // Switch to `true` before App Store release to put sync back behind the paywall.
+    static let isCloudSyncPaywalled = false
+}
+
 enum PremiumFeature: CaseIterable, Hashable {
     case iCloudSyncBackup
     case advancedAnalytics
@@ -22,6 +28,17 @@ enum PremiumFeature: CaseIterable, Hashable {
             return L10n.text("pro.feature.ai_insights", lang: lang)
         case .adFree:
             return L10n.text("pro.feature.no_ads", lang: lang)
+        }
+    }
+
+    static var paywalledCases: [PremiumFeature] {
+        allCases.filter { feature in
+            switch feature {
+            case .iCloudSyncBackup:
+                return MonetizationConfig.isCloudSyncPaywalled
+            case .advancedAnalytics, .aiInsights, .adFree:
+                return true
+            }
         }
     }
 }
@@ -184,7 +201,9 @@ final class SubscriptionManager: ObservableObject {
 
     func isUnlocked(_ feature: PremiumFeature) -> Bool {
         switch feature {
-        case .iCloudSyncBackup, .advancedAnalytics, .aiInsights, .adFree:
+        case .iCloudSyncBackup:
+            return !MonetizationConfig.isCloudSyncPaywalled || hasProAccess
+        case .advancedAnalytics, .aiInsights, .adFree:
             return hasProAccess
         }
     }
@@ -519,7 +538,7 @@ struct PaywallView: View {
         NavigationStack {
             List {
                 Section(L10n.text("pro.includes", lang: lang)) {
-                    ForEach(PremiumFeature.allCases, id: \.self) { feature in
+                    ForEach(PremiumFeature.paywalledCases, id: \.self) { feature in
                         Label(feature.title(lang: lang), systemImage: "checkmark.circle.fill")
                             .foregroundStyle(Color.primary.opacity(0.88))
                     }

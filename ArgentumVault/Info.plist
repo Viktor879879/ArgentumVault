@@ -3,17 +3,21 @@
 <plist version="1.0">
 <dict>
 	<key>ALPHA_VANTAGE_API_KEY</key>
-	<string>O5214G3ZJ5DH4REF</string>
+	<string>$(ALPHA_VANTAGE_API_KEY)</string>
 	<key>GADApplicationIdentifier</key>
-	<string>ca-app-pub-3581580891903061~6502530134</string>
+	<string>$(GAD_APPLICATION_IDENTIFIER)</string>
 	<key>GADBannerAdUnitID</key>
-	<string>ca-app-pub-3581580891903061/4916219360</string>
+	<string>$(GAD_BANNER_AD_UNIT_ID)</string>
 	<key>AdsHomeBottomBannerUnitID</key>
-	<string>ca-app-pub-3581580891903061/4916219360</string>
+	<string>$(ADS_HOME_BOTTOM_BANNER_UNIT_ID)</string>
 	<key>AdsRemoteConfigURL</key>
-	<string></string>
+	<string>$(ADS_REMOTE_CONFIG_URL)</string>
 	<key>AdsRemoteConfigFetchIntervalSeconds</key>
-	<integer>3600</integer>
+	<string>$(ADS_REMOTE_CONFIG_FETCH_INTERVAL_SECONDS)</string>
+	<key>SUPABASE_URL</key>
+	<string>$(SUPABASE_URL)</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>$(SUPABASE_ANON_KEY)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
