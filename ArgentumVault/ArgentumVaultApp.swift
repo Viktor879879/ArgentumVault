@@ -814,7 +814,7 @@ private enum StorageModePolicy {
     private static let authMethodKey = "authMethod"
 
     static func currentCloudBackupAccountIdentifier() -> String? {
-        currentEmailCloudBackupIdentifier()
+        currentAppleAccountIdentifier()
     }
 
     static func currentAppleAccountIdentifier() -> String? {
@@ -854,23 +854,11 @@ private enum StorageModePolicy {
     }
 
     static func currentAccountIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let method = defaults.string(forKey: authMethodKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-
-        switch method {
-        case "email":
-            return currentEmailAccountIdentifier()
-        case "apple":
-            return currentAppleAccountIdentifier()
-        default:
-            // Backward compatibility for legacy states without explicit auth method.
-            return currentEmailAccountIdentifier() ?? currentAppleAccountIdentifier()
-        }
+        currentAppleAccountIdentifier() ?? currentEmailAccountIdentifier()
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {
-        return currentEmailAccountIdentifier() != nil
+        // Until backend email auth is introduced, cloud backup/sync is Apple-ID-only.
+        return currentCloudBackupAccountIdentifier() != nil
     }
 }

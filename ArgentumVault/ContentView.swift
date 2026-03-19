@@ -95,15 +95,7 @@ struct ContentView: View {
     }
 
     private var isAccountConnected: Bool {
-        let normalizedMethod = authMethod.trimmed.lowercased()
-        switch normalizedMethod {
-        case "apple":
-            return !appleUserID.trimmed.isEmpty
-        case "email":
-            return !emailUserID.trimmed.isEmpty || !emailUserEmail.trimmed.isEmpty
-        default:
-            return !emailUserID.trimmed.isEmpty || !emailUserEmail.trimmed.isEmpty || !appleUserID.trimmed.isEmpty
-        }
+        !appleUserID.isEmpty || !emailUserEmail.isEmpty
     }
     
     var body: some View {
@@ -182,19 +174,13 @@ struct ContentView: View {
                 didCompleteInitialSetup = true
             }
             if authMethod.isEmpty {
-                if !emailUserEmail.isEmpty || !emailUserID.isEmpty {
+                if !appleUserID.isEmpty {
+                    authMethod = "apple"
+                } else if !emailUserEmail.isEmpty {
                     authMethod = "email"
                 } else if !appleUserID.isEmpty {
                     authMethod = "apple"
                 }
-            }
-            if authMethod == "email" {
-                appleUserID = ""
-                appleUserEmail = ""
-                appleUserName = ""
-            } else if authMethod == "apple" {
-                emailUserEmail = ""
-                emailUserID = ""
             }
             if appCountryCode.isEmpty {
                 appCountryCode = CountryCatalog.defaultCountryCode()
@@ -324,10 +310,13 @@ struct FirstLaunchSetupView: View {
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
 
+    @State private var appleSignInCoordinator = AppleSignInCoordinator()
     @State private var step: FirstSetupStep = .account
     @State private var selectedLanguageCode = FirstLaunchSetupView.defaultLanguageCode()
     @State private var selectedCurrencyCode = CurrencyCatalog.baseCurrencies.first?.code ?? "USD"
     @State private var selectedCountryCode = CountryCatalog.defaultCountryCode()
+    @State private var showAppleAuthError = false
+    @State private var appleAuthErrorMessage = ""
     @State private var activeEmailAuthMode: EmailAuthMode?
 
     private let requiresPreferencesStep: Bool
@@ -353,7 +342,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private var isAccountConnected: Bool {
-        currentSetupAccountID() != nil
+        !appleUserID.isEmpty || !emailUserEmail.isEmpty
     }
 
     var body: some View {
@@ -368,6 +357,13 @@ struct FirstLaunchSetupView: View {
 
                             if !isAccountConnected {
                                 VStack(spacing: 14) {
+                                    AppleSignInActionButton(title: L10n.text("settings.account.sign_in_apple", lang: uiLanguageCode), action: startAppleSignIn)
+
+                                    Text(L10n.text("common.or", lang: uiLanguageCode))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .center)
+
                                     Button {
                                         openEmailAuth(mode: .signIn)
                                     } label: {
@@ -379,6 +375,11 @@ struct FirstLaunchSetupView: View {
                                     .tint(.black)
                                     .foregroundStyle(.white)
                                     .frame(maxWidth: .infinity, alignment: .center)
+
+                                    Text(L10n.text("common.or", lang: uiLanguageCode))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .center)
 
                                     Button {
                                         openEmailAuth(mode: .signUp)
@@ -454,6 +455,14 @@ struct FirstLaunchSetupView: View {
                 handleEmailAuthSuccess(session: session)
             }
         }
+        .alert(
+            L10n.text("settings.account.error_title", lang: uiLanguageCode),
+            isPresented: $showAppleAuthError
+        ) {
+            Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
+        } message: {
+            Text(appleAuthErrorMessage)
+        }
         .onAppear {
             guard step == .account, isAccountConnected else { return }
             triggerProRestoreAfterAuthorization()
@@ -496,7 +505,47 @@ struct FirstLaunchSetupView: View {
         saveSetupProfileForCurrentAccount()
     }
 
-    private func handleEmailAuthSuccess(session: EmailAuthSession) {
+    private func handleAppleSignIn(result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                appleAuthErrorMessage = L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+                showAppleAuthError = true
+                return
+            }
+            showAppleAuthError = false
+            emailUserEmail = ""
+            appleUserID = credential.user
+            authMethod = "apple"
+            if let email = credential.email, !email.isEmpty {
+                appleUserEmail = email
+            }
+            let given = credential.fullName?.givenName ?? ""
+            let family = credential.fullName?.familyName ?? ""
+            let fullName = [given, family]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            if !fullName.isEmpty {
+                appleUserName = fullName
+            }
+            SessionEvents.postAccountSessionDidChange()
+            triggerProRestoreAfterAuthorization()
+            if let accountID = SetupProfileStore.appleAccountID(credential.user),
+               restoreSetupProfileIfPresent(for: accountID) {
+                return
+            }
+            proceedAfterAuth()
+        case .failure(let error):
+            if let appleError = error as? ASAuthorizationError, appleError.code == .canceled {
+                return
+            }
+            appleAuthErrorMessage = localizedAppleSignInError(error)
+            showAppleAuthError = true
+        }
+    }
+
+    private func handleEmailAuthSuccess(email: String) {
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -514,6 +563,12 @@ struct FirstLaunchSetupView: View {
 
     private func openEmailAuth(mode: EmailAuthMode) {
         activeEmailAuthMode = mode
+    }
+
+    private func startAppleSignIn() {
+        appleSignInCoordinator.start { result in
+            handleAppleSignIn(result: result)
+        }
     }
 
     private func triggerProRestoreAfterAuthorization() {
@@ -572,15 +627,16 @@ struct FirstLaunchSetupView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        let normalizedMethod = authMethod.trimmed.lowercased()
-        switch normalizedMethod {
+        switch authMethod {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
         case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
+            return SetupProfileStore.emailAccountID(emailUserEmail)
         default:
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-                ?? SetupProfileStore.appleAccountID(appleUserID)
+            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
+                return appleAccountID
+            }
+            return SetupProfileStore.emailAccountID(emailUserEmail)
         }
     }
 
@@ -605,6 +661,29 @@ struct FirstLaunchSetupView: View {
         return CountryCatalog.defaultCountryCode()
     }
 
+    private func localizedAppleSignInError(_ error: Error) -> String {
+        if let appleError = error as? ASAuthorizationError {
+            switch appleError.code {
+            case .canceled:
+                return L10n.text("settings.account.error_canceled", lang: uiLanguageCode)
+            case .invalidResponse:
+                return L10n.text("settings.account.error_invalid_response", lang: uiLanguageCode)
+            case .notHandled:
+                return L10n.text("settings.account.error_not_handled", lang: uiLanguageCode)
+            case .failed:
+                return L10n.text("settings.account.error_failed", lang: uiLanguageCode)
+            case .notInteractive:
+                return L10n.text("settings.account.error_not_interactive", lang: uiLanguageCode)
+            case .unknown:
+                return L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+            case .matchedExcludedCredential, .credentialImport, .credentialExport, .preferSignInWithApple, .deviceNotConfiguredForPasskeyCreation:
+                return L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+            @unknown default:
+                return L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+            }
+        }
+        return error.localizedDescription
+    }
 }
 
 struct HomeView: View {
@@ -4108,8 +4187,11 @@ struct SettingsView: View {
     @State private var editingCategory: Category?
     @State private var isAddingRecurringRule = false
     @State private var editingRecurringRule: RecurringTransactionRule?
+    @State private var showAppleAuthError = false
+    @State private var appleAuthErrorMessage = ""
     @State private var showPaywall = false
-    @State private var activeEmailAuthMode: EmailAuthMode?
+    @State private var showEmailAuthSheet = false
+    @State private var appleSignInCoordinator = AppleSignInCoordinator()
 #if DEBUG
     @State private var cloudDebugStatus: ICloudBackupManager.SnapshotDebugStatus?
     @State private var cloudDebugMessage = ""
@@ -4148,7 +4230,7 @@ struct SettingsView: View {
     }
 
     private var isAccountConnected: Bool {
-        currentSetupAccountID() != nil
+        !appleUserID.isEmpty || !emailUserEmail.isEmpty
     }
     
     var body: some View {
@@ -4156,28 +4238,38 @@ struct SettingsView: View {
             List {
                 Section(L10n.text("settings.account", lang: uiLanguageCode)) {
                     if !isAccountConnected {
-                        Button(L10n.text("settings.account.sign_in_email", lang: uiLanguageCode)) {
-                            activeEmailAuthMode = .signIn
+                        AppleSignInActionButton(title: L10n.text("settings.account.sign_in_apple", lang: uiLanguageCode)) {
+                            appleSignInCoordinator.start { result in
+                                handleAppleSignIn(result: result)
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .frame(maxWidth: .infinity, alignment: .center)
-
                         Text(L10n.text("common.or", lang: uiLanguageCode))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .center)
-
-                        Button(L10n.text("settings.account.create_email", lang: uiLanguageCode)) {
-                            activeEmailAuthMode = .signUp
+                        Button(L10n.text("settings.account.sign_in_email", lang: uiLanguageCode)) {
+                            showEmailAuthSheet = true
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .frame(maxWidth: .infinity, alignment: .center)
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(L10n.text("settings.account.connected_email", lang: uiLanguageCode))
+                            Text(authMethod == "email"
+                                 ? L10n.text("settings.account.connected_email", lang: uiLanguageCode)
+                                 : L10n.text("settings.account.connected", lang: uiLanguageCode))
                                 .font(.subheadline.weight(.semibold))
-                            Text(emailUserEmail)
-                                .font(.subheadline)
+                            if authMethod == "email" {
+                                Text(emailUserEmail)
+                                    .font(.subheadline)
+                            } else if !appleUserName.isEmpty {
+                                Text(appleUserName)
+                                    .font(.subheadline)
+                            }
+                            if authMethod == "apple", !appleUserEmail.isEmpty {
+                                Text(appleUserEmail)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                         Button(role: .destructive) {
                             signOutCurrentAccount()
@@ -4506,19 +4598,24 @@ struct SettingsView: View {
                 PaywallView(lang: uiLanguageCode)
                     .environmentObject(subscriptionManager)
             }
-            .sheet(item: $activeEmailAuthMode) { mode in
-                EmailAuthSheetView(
-                    lang: uiLanguageCode,
-                    initialMode: mode,
-                    showsModePicker: false
-                ) { session in
-                    handleEmailAuthSuccess(session: session)
+            .sheet(isPresented: $showEmailAuthSheet) {
+                EmailAuthSheetView(lang: uiLanguageCode) { email in
+                    handleEmailAuthSuccess(email: email)
                 }
+            }
+            .alert(
+                L10n.text("settings.account.error_title", lang: uiLanguageCode),
+                isPresented: $showAppleAuthError
+            ) {
+                Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
+            } message: {
+                Text(appleAuthErrorMessage)
             }
             .onAppear {
                 if appCountryCode.isEmpty {
                     appCountryCode = CountryCatalog.defaultCountryCode()
                 }
+                validateAppleCredentialIfNeeded()
                 persistSetupProfileIfPossible()
                 Task { await subscriptionManager.start() }
 #if DEBUG
@@ -4616,6 +4713,66 @@ struct SettingsView: View {
         return formatter.string(from: date)
     }
 
+    private func handleAppleSignIn(result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                appleAuthErrorMessage = L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+                showAppleAuthError = true
+                return
+            }
+            showAppleAuthError = false
+            emailUserEmail = ""
+            appleUserID = credential.user
+            authMethod = "apple"
+            if let email = credential.email, !email.isEmpty {
+                appleUserEmail = email
+            }
+            let given = credential.fullName?.givenName ?? ""
+            let family = credential.fullName?.familyName ?? ""
+            let fullName = [given, family]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            if !fullName.isEmpty {
+                appleUserName = fullName
+            }
+            SessionEvents.postAccountSessionDidChange()
+            triggerProRestoreAfterAuthorization()
+            persistSetupProfileIfPossible()
+#if DEBUG
+            refreshCloudDebugStatus()
+#endif
+        case .failure(let error):
+            if let appleError = error as? ASAuthorizationError, appleError.code == .canceled {
+                return
+            }
+            appleAuthErrorMessage = localizedAppleSignInError(error)
+            showAppleAuthError = true
+        }
+    }
+
+    private func validateAppleCredentialIfNeeded() {
+        guard authMethod != "email" else { return }
+        let storedUserID = appleUserID
+        guard !storedUserID.isEmpty else { return }
+
+        let provider = ASAuthorizationAppleIDProvider()
+        provider.getCredentialState(forUserID: storedUserID) { credentialState, error in
+            Task { @MainActor in
+                if let error {
+                    // Background status check should not block UX with alerts.
+                    // Keep stored account as-is unless Apple explicitly says it's revoked/notFound.
+                    _ = error
+                    return
+                }
+                if credentialState == .revoked || credentialState == .notFound {
+                    clearAccountSession()
+                }
+            }
+        }
+    }
+
     private func clearAccountSession() {
         appleUserID = ""
         appleUserEmail = ""
@@ -4658,23 +4815,21 @@ struct SettingsView: View {
 
 #if DEBUG
     private var currentBackupAccountIdentifier: String? {
-        let normalizedMethod = authMethod.trimmed.lowercased()
-        let normalizedEmail = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedEmailUserID = emailUserID.trimmed.lowercased()
-        let normalizedAppleID = appleUserID.trimmed
-
-        switch normalizedMethod {
+        switch authMethod {
         case "apple":
-            if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
+            guard !appleUserID.isEmpty else { return nil }
+            return "apple:\(appleUserID)"
         case "email":
-            if !normalizedEmailUserID.isEmpty { return "email_uid:\(normalizedEmailUserID)" }
-            if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
+            let email = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !email.isEmpty else { return nil }
+            return "email:\(email)"
         default:
-            if !normalizedEmailUserID.isEmpty { return "email_uid:\(normalizedEmailUserID)" }
-            if !normalizedEmail.isEmpty { return "email:\(normalizedEmail)" }
-            if !normalizedAppleID.isEmpty { return "apple:\(normalizedAppleID)" }
+            if !appleUserID.isEmpty {
+                return "apple:\(appleUserID)"
+            }
+            let email = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return email.isEmpty ? nil : "email:\(email)"
         }
-        return nil
     }
 
     private func refreshCloudDebugStatus() {
@@ -4788,15 +4943,16 @@ struct SettingsView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        let normalizedMethod = authMethod.trimmed.lowercased()
-        switch normalizedMethod {
+        switch authMethod {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
         case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
+            return SetupProfileStore.emailAccountID(emailUserEmail)
         default:
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-                ?? SetupProfileStore.appleAccountID(appleUserID)
+            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
+                return appleAccountID
+            }
+            return SetupProfileStore.emailAccountID(emailUserEmail)
         }
     }
 
@@ -4826,6 +4982,29 @@ struct SettingsView: View {
         return CountryCatalog.defaultCountryCode()
     }
 
+    private func localizedAppleSignInError(_ error: Error) -> String {
+        if let appleError = error as? ASAuthorizationError {
+            switch appleError.code {
+            case .canceled:
+                return L10n.text("settings.account.error_canceled", lang: uiLanguageCode)
+            case .invalidResponse:
+                return L10n.text("settings.account.error_invalid_response", lang: uiLanguageCode)
+            case .notHandled:
+                return L10n.text("settings.account.error_not_handled", lang: uiLanguageCode)
+            case .failed:
+                return L10n.text("settings.account.error_failed", lang: uiLanguageCode)
+            case .notInteractive:
+                return L10n.text("settings.account.error_not_interactive", lang: uiLanguageCode)
+            case .unknown:
+                return L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+            case .matchedExcludedCredential, .credentialImport, .credentialExport, .preferSignInWithApple, .deviceNotConfiguredForPasskeyCreation:
+                return L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+            @unknown default:
+                return L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+            }
+        }
+        return error.localizedDescription
+    }
 }
 
 struct AddRecurringRuleView: View {
