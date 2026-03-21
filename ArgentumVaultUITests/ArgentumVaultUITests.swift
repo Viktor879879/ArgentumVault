@@ -1,13 +1,13 @@
 //
-//  MoneyGramUITests.swift
-//  MoneyGramUITests
+//  ArgentumVaultUITests.swift
+//  ArgentumVaultUITests
 //
 //  Created by Viktor Parshyn on 2026-02-04.
 //
 
 import XCTest
 
-final class MoneyGramUITests: XCTestCase {
+final class ArgentumVaultUITests: XCTestCase {
 
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.

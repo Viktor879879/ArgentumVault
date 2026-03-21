@@ -3,7 +3,24 @@
 <plist version="1.0">
 <dict>
 	<key>ALPHA_VANTAGE_API_KEY</key>
+<<<<<<< HEAD
 	<string>O5214G3ZJ5DH4REF</string>
+=======
+	<string>$(ALPHA_VANTAGE_API_KEY)</string>
+	<key>GADApplicationIdentifier</key>
+	<string>$(GAD_APPLICATION_IDENTIFIER)</string>
+	<key>GADBannerAdUnitID</key>
+	<string>$(GAD_BANNER_AD_UNIT_ID)</string>
+	<key>AdsHomeBottomBannerUnitID</key>
+	<string>$(ADS_HOME_BOTTOM_BANNER_UNIT_ID)</string>
+	<key>AdsRemoteConfigURL</key>
+	<string>$(ADS_REMOTE_CONFIG_URL)</string>
+	<key>AdsRemoteConfigFetchIntervalSeconds</key>
+	<string>$(ADS_REMOTE_CONFIG_FETCH_INTERVAL_SECONDS)</string>
+	<key>SUPABASE_URL</key>
+	<string>$(SUPABASE_URL)</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>$(SUPABASE_ANON_KEY)</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

@@ -1,0 +1,107 @@
+{
+  "appPolicies" : {
+    "eula" : "",
+    "policies" : [
+      {
+        "locale" : "en_US",
+        "policyText" : "",
+        "policyURL" : ""
+      }
+    ]
+  },
+  "identifier" : "E07046BB",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_applicationInternalID" : "6759206011",
+    "_askToBuyEnabled" : false,
+    "_billingGracePeriodEnabled" : false,
+    "_billingIssuesEnabled" : false,
+    "_developerTeamID" : "X9W248M88B",
+    "_disableDialogs" : false,
+    "_failTransactionsEnabled" : false,
+    "_lastSynchronizedDate" : 792874262.23248899,
+    "_locale" : "en_US",
+    "_renewalBillingIssuesEnabled" : false,
+    "_storefront" : "USA",
+    "_storeKitErrors" : [
+
+    ],
+    "_timeRate" : 0
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "21935258",
+      "localizations" : [
+
+      ],
+      "name" : "Pro Subscription",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "3.99",
+          "familyShareable" : false,
+          "groupNumber" : 3,
+          "internalID" : "6759224913",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Advanced analytics, AI insights, and ad-free experience",
+              "displayName" : "Argentum Vault Pro (Monthly)",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.argentumvault.pro.monthly1",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Pro Monthly1",
+          "subscriptionGroupID" : "21935258",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "39.99",
+          "familyShareable" : false,
+          "groupNumber" : 2,
+          "internalID" : "6759224779",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Advanced analytics, AI insights, and ad-free experience",
+              "displayName" : "Argentum Vault Pro (Yearly)",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.argentumvault.pro.yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Pro Yearly",
+          "subscriptionGroupID" : "21935258",
+          "type" : "RecurringSubscription",
+          "winbackOffers" : [
+
+          ]
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

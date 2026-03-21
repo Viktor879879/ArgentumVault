@@ -9,12 +9,12 @@ enum CSVExporter {
         for transaction in transactions {
             let date = formatter.string(from: transaction.date)
             let type = (transaction.type ?? .expense) == .income ? "Income" : "Expense"
-            let amount = DecimalFormatter.editingString(from: transaction.amount)
+            let amount = DecimalFormatter.exportString(from: transaction.amount)
             let currency = transaction.currencyCode
             let category = csvEscape(transaction.category?.name ?? "")
             let wallet = csvEscape(transaction.wallet?.name ?? "")
             let note = csvEscape(transaction.note ?? "")
-            rows.append("\(date),\(type),\(amount),\(currency),\(category),\(wallet),\(note)")
+            rows.append("\(csvEscape(date)),\(csvEscape(type)),\(csvEscape(amount)),\(csvEscape(currency)),\(category),\(wallet),\(note)")
         }
         
         return rows.joined(separator: "\n")

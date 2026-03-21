@@ -1,13 +1,13 @@
 //
-//  MoneyGramUITestsLaunchTests.swift
-//  MoneyGramUITests
+//  ArgentumVaultUITestsLaunchTests.swift
+//  ArgentumVaultUITests
 //
 //  Created by Viktor Parshyn on 2026-02-04.
 //
 
 import XCTest
 
-final class MoneyGramUITestsLaunchTests: XCTestCase {
+final class ArgentumVaultUITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true

@@ -1,13 +1,13 @@
 //
-//  MoneyGramTests.swift
-//  MoneyGramTests
+//  ArgentumVaultTests.swift
+//  ArgentumVaultTests
 //
 //  Created by Viktor Parshyn on 2026-02-04.
 //
 
 import Testing
 
-struct MoneyGramTests {
+struct ArgentumVaultTests {
 
     @Test func example() async throws {
         // Write your test here and use APIs like `#expect(...)` to check expected conditions.
