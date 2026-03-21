@@ -196,6 +196,10 @@ struct ContentView: View {
                     languageCode: uiLanguageCode,
                     didSeedDefaultCategories: &didSeedDefaultCategories
                 )
+                CategoryLocalizationService.scheduleBackfillAll(
+                    modelContext: modelContext,
+                    currentLanguageCode: uiLanguageCode
+                )
             }
             await subscriptionManager.start()
         }
@@ -214,6 +218,13 @@ struct ContentView: View {
             if !didShowOnboarding || forceShowOnboardingOnce {
                 showOnboarding = true
             }
+        }
+        .onChange(of: appLanguageCode) {
+            guard didCompleteInitialSetup else { return }
+            CategoryLocalizationService.scheduleBackfillAll(
+                modelContext: modelContext,
+                currentLanguageCode: uiLanguageCode
+            )
         }
         .fullScreenCover(isPresented: $showOnboarding) {
             OnboardingView(lang: uiLanguageCode) {
@@ -1147,7 +1158,7 @@ struct HomeView: View {
         }()
 
         let searchBlob = [
-            transaction.category?.name ?? "",
+            transaction.category?.displayName(languageCode: uiLanguageCode) ?? "",
             transaction.note ?? "",
             transaction.walletNameSnapshot ?? "",
             transaction.transferWalletNameSnapshot ?? "",
@@ -1403,13 +1414,14 @@ struct WalletRow: View {
 
 struct CategoryRow: View {
     let category: Category
+    let languageCode: String
     
     var body: some View {
         HStack(spacing: 12) {
             Circle()
                 .fill(Color(hex: category.colorHex))
                 .frame(width: 22, height: 22)
-            Text(category.name)
+            Text(category.displayName(languageCode: languageCode))
             Spacer()
         }
     }
@@ -1721,7 +1733,7 @@ struct AnalyticsView: View {
                 guard let amount = sums[category.persistentModelID], amount != 0 else { return nil }
                 return CategoryTotal(
                     id: category.persistentModelID,
-                    name: category.name,
+                    name: category.displayName(languageCode: uiLanguageCode),
                     amount: amount,
                     color: Color(hex: category.colorHex),
                     total: totalAbs,
@@ -1794,7 +1806,7 @@ struct AnalyticsView: View {
             return L10n.text("pro.analytics.no_data", lang: uiLanguageCode)
         }
         let amountText = formatAmount(convertedAbsoluteAmount(for: largest))
-        let categoryText = largest.category?.name ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
+        let categoryText = largest.category?.displayName(languageCode: uiLanguageCode) ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
         return "\(amountText) • \(categoryText)"
     }
 
@@ -1920,7 +1932,7 @@ struct AnalyticsView: View {
                 to: baseCurrencyCode
             ) ?? transaction.amount
             let amount = absDecimal(converted)
-            let categoryName = transaction.category?.name ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
+            let categoryName = transaction.category?.displayName(languageCode: uiLanguageCode) ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
             expenseByCategory[categoryName, default: 0] += amount
         }
 
@@ -2014,7 +2026,7 @@ struct AnalyticsView: View {
     private var topTodayExpenseCategorySummary: (name: String, amount: Decimal)? {
         var sums: [String: Decimal] = [:]
         for transaction in todayExpenseTransactions {
-            let categoryName = transaction.category?.name ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
+            let categoryName = transaction.category?.displayName(languageCode: uiLanguageCode) ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
             sums[categoryName, default: 0] += convertedAbsoluteAmount(for: transaction)
         }
         guard let top = sums.max(by: { $0.value < $1.value }) else { return nil }
@@ -2957,7 +2969,7 @@ struct TransactionRow: View {
         if transactionTypeResolved == .transfer {
             return transferTitle
         }
-        return transaction.category?.name ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
+        return transaction.category?.displayName(languageCode: uiLanguageCode) ?? L10n.text("transaction.untagged", lang: uiLanguageCode)
     }
     
     private var transferTitle: String {
@@ -3018,7 +3030,7 @@ struct AddCategoryView: View {
     
     init(category: Category? = nil) {
         self.category = category
-        _name = State(initialValue: category?.name ?? "")
+        _name = State(initialValue: category?.displayName(languageCode: CategoryLocalization.currentInterfaceLanguageCode()) ?? "")
         _type = State(initialValue: category?.type ?? .expense)
         _colorHex = State(initialValue: category?.colorHex ?? "2F80EDFF")
         let initialHex = category?.colorHex ?? "2F80EDFF"
@@ -3169,20 +3181,39 @@ struct AddCategoryView: View {
     
     private func saveCategory() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceCode = CategoryLocalization.detectSourceLanguage(for: trimmed, fallbackLanguageCode: uiLanguageCode)
+        let localizedNamesJSON = CategoryLocalization.encodeLocalizedNames([sourceCode: trimmed])
+        let categoryForBackfill: Category
+
         if let category {
-            category.name = trimmed
+            let currentDisplayedName = category.displayName(languageCode: uiLanguageCode)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if currentDisplayedName != trimmed {
+                category.name = trimmed
+                category.sourceLanguageCode = sourceCode
+                category.localizedNamesJSON = localizedNamesJSON
+            }
             category.type = type
             category.colorHex = colorHex
             category.updatedAt = Date()
+            categoryForBackfill = category
         } else {
             let newCategory = Category(
                 name: trimmed,
+                sourceLanguageCode: sourceCode,
+                localizedNamesJSON: localizedNamesJSON,
                 type: type,
                 colorHex: colorHex
             )
             modelContext.insert(newCategory)
+            categoryForBackfill = newCategory
         }
         try? modelContext.save()
+        CategoryLocalizationService.scheduleBackfill(
+            for: categoryForBackfill,
+            modelContext: modelContext,
+            currentLanguageCode: uiLanguageCode
+        )
     }
     
     private func parseHex(_ value: String) -> String? {
@@ -3409,7 +3440,7 @@ struct AddTransactionView: View {
                         Picker(L10n.text("settings.tags", lang: uiLanguageCode), selection: $selectedCategoryID) {
                             Text(L10n.text("transaction.select_tag", lang: uiLanguageCode)).tag(PersistentIdentifier?.none)
                             ForEach(filteredCategories, id: \.persistentModelID) { category in
-                                Text(category.name)
+                                Text(category.displayName(languageCode: uiLanguageCode))
                                     .tag(Optional(category.persistentModelID))
                             }
                         }
@@ -3594,7 +3625,12 @@ struct AddTransactionView: View {
             return []
         }
         let expectedType = categoryTypeFromTransactionType()
-        return categories.filter { $0.type == expectedType }
+        return categories
+            .filter { $0.type == expectedType }
+            .sorted {
+                $0.displayName(languageCode: uiLanguageCode)
+                    .localizedCaseInsensitiveCompare($1.displayName(languageCode: uiLanguageCode)) == .orderedAscending
+            }
     }
     
     private func categoryTypeFromTransactionType() -> CategoryType {
@@ -4216,7 +4252,12 @@ struct SettingsView: View {
     ]
     
     private var filteredCategories: [Category] {
-        categories.filter { $0.type == selectedType }
+        categories
+            .filter { $0.type == selectedType }
+            .sorted {
+                $0.displayName(languageCode: uiLanguageCode)
+                    .localizedCaseInsensitiveCompare($1.displayName(languageCode: uiLanguageCode)) == .orderedAscending
+            }
     }
     
     private var controlsTint: Color {
@@ -4541,7 +4582,7 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(filteredCategories, id: \.persistentModelID) { category in
-                            CategoryRow(category: category)
+                            CategoryRow(category: category, languageCode: uiLanguageCode)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     editingCategory = category
@@ -4860,8 +4901,9 @@ struct SettingsView: View {
             return
         }
         Task { @MainActor in
+            let backupContext = ModelContext(modelContext.container)
             ICloudBackupManager.backupIfNeeded(
-                modelContext: modelContext,
+                modelContext: backupContext,
                 accountIdentifier: accountIdentifier,
                 force: true
             )
@@ -4883,10 +4925,14 @@ struct SettingsView: View {
             return
         }
         Task { @MainActor in
+            SessionEvents.postModelStoreRestoreWillBegin()
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            let restoreContext = ModelContext(modelContext.container)
             let restored = (try? await ICloudBackupManager.restoreIfNeeded(
-                modelContext: modelContext,
+                modelContext: restoreContext,
                 accountIdentifier: accountIdentifier
             )) ?? false
+            SessionEvents.postModelStoreDidRestore(restored: restored)
             refreshCloudDebugStatus()
             finishCloudDebugOperation(
                 token: token,
@@ -5082,7 +5128,12 @@ struct AddRecurringRuleView: View {
 
     private var filteredCategories: [Category] {
         let expectedType: CategoryType = (type == .income) ? .income : .expense
-        return categories.filter { $0.type == expectedType }
+        return categories
+            .filter { $0.type == expectedType }
+            .sorted {
+                $0.displayName(languageCode: uiLanguageCode)
+                    .localizedCaseInsensitiveCompare($1.displayName(languageCode: uiLanguageCode)) == .orderedAscending
+            }
     }
 
     private var canSave: Bool {
@@ -5122,7 +5173,7 @@ struct AddRecurringRuleView: View {
                     Picker(L10n.text("settings.tags", lang: uiLanguageCode), selection: $selectedCategoryID) {
                         Text(L10n.text("transaction.select_tag", lang: uiLanguageCode)).tag(PersistentIdentifier?.none)
                         ForEach(filteredCategories, id: \.persistentModelID) { category in
-                            Text(category.name).tag(Optional(category.persistentModelID))
+                            Text(category.displayName(languageCode: uiLanguageCode)).tag(Optional(category.persistentModelID))
                         }
                     }
                     .pickerStyle(.menu)

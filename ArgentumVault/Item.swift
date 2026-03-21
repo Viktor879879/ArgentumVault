@@ -40,6 +40,8 @@ enum BudgetPeriod: String, Codable, CaseIterable {
 final class Category {
     var syncID: String = UUID().uuidString.lowercased()
     var name: String = ""
+    var sourceLanguageCode: String?
+    var localizedNamesJSON: String?
     var type: CategoryType = CategoryType.expense
     var colorHex: String = "FFFFFFFF"
     var deletedAt: Date?
@@ -58,6 +60,8 @@ final class Category {
     init(
         syncID: String = UUID().uuidString.lowercased(),
         name: String,
+        sourceLanguageCode: String? = nil,
+        localizedNamesJSON: String? = nil,
         type: CategoryType,
         colorHex: String,
         deletedAt: Date? = nil,
@@ -66,6 +70,8 @@ final class Category {
     ) {
         self.syncID = syncID
         self.name = name
+        self.sourceLanguageCode = sourceLanguageCode
+        self.localizedNamesJSON = localizedNamesJSON
         self.type = type
         self.colorHex = colorHex
         self.deletedAt = deletedAt

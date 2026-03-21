@@ -31,7 +31,7 @@ enum ICloudBackupManager {
     // Lightweight periodic sync pass. Primary upload trigger is still save-driven backup.
     static let periodicIntervalNanoseconds: UInt64 = 10_000_000_000 // 10 seconds
 
-    private static let schemaVersion = 2
+    private static let schemaVersion = 3
     private static let appSupportBackupFolder = "ArgentumVaultBackups"
     private static let supabaseSnapshotsTable = "av_backup_snapshots"
     private static let supabaseOwnerUserIDField = "owner_user_id"
@@ -810,14 +810,17 @@ enum ICloudBackupManager {
             let key = makeEntityKey(
                 kind: "category",
                 index: index,
-                parts: [category.name, category.type.rawValue, category.createdAt.timeIntervalSince1970.description]
+                parts: [category.syncID, category.type.rawValue]
             )
             categoryRecords.append(
                 CategoryRecord(
                     key: key,
+                    syncID: category.syncID,
                     name: category.name,
                     typeRaw: category.type.rawValue,
                     colorHex: category.colorHex,
+                    sourceLanguageCode: category.sourceLanguageCode,
+                    localizedNamesJSON: category.localizedNamesJSON,
                     createdAt: category.createdAt,
                     updatedAt: category.updatedAt
                 )
@@ -956,7 +959,10 @@ enum ICloudBackupManager {
         var categoryByKey: [String: Category] = [:]
         for record in snapshot.categories {
             let category = Category(
+                syncID: record.syncID ?? UUID().uuidString.lowercased(),
                 name: record.name,
+                sourceLanguageCode: record.sourceLanguageCode,
+                localizedNamesJSON: record.localizedNamesJSON,
                 type: CategoryType(rawValue: record.typeRaw) ?? .expense,
                 colorHex: record.colorHex,
                 createdAt: record.createdAt,
@@ -1060,7 +1066,7 @@ enum ICloudBackupManager {
         }
     }
 
-    private static func hasCoreFinancialData(in context: ModelContext) -> Bool {
+    static func hasCoreFinancialData(in context: ModelContext) -> Bool {
         guard let wallets = safeFetch(FetchDescriptor<Wallet>(), in: context) else { return true }
         if !wallets.isEmpty { return true }
 
@@ -1181,9 +1187,12 @@ private struct BackupSnapshot: Codable {
 
 private struct CategoryRecord: Codable {
     let key: String
+    let syncID: String?
     let name: String
     let typeRaw: String
     let colorHex: String
+    let sourceLanguageCode: String?
+    let localizedNamesJSON: String?
     let createdAt: Date
     let updatedAt: Date
 }
