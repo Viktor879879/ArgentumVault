@@ -31,7 +31,7 @@ enum ICloudBackupManager {
     // Lightweight periodic sync pass. Primary upload trigger is still save-driven backup.
     static let periodicIntervalNanoseconds: UInt64 = 10_000_000_000 // 10 seconds
 
-    private static let schemaVersion = 1
+    private static let schemaVersion = 2
     private static let appSupportBackupFolder = "ArgentumVaultBackups"
     private static let supabaseSnapshotsTable = "av_backup_snapshots"
     private static let supabaseOwnerUserIDField = "owner_user_id"
@@ -49,6 +49,9 @@ enum ICloudBackupManager {
     private static let lastCloudSuccessDefaultsPrefix = "backup.icloud.cloudkit.last_success."
     private static let lastCloudErrorDefaultsPrefix = "backup.icloud.cloudkit.last_error."
     private static let localDirtyDefaultsPrefix = "backup.icloud.local_dirty."
+    private static let localMutationTimestampDefaultsPrefix = "backup.icloud.local_mutation_at."
+    private static let snapshotVersionDefaultsPrefix = "backup.icloud.snapshot_version."
+    private static let deviceIDDefaultsKey = "backup.icloud.device_id"
     private static let storageCloudKitErrorKey = "storage.cloudkit.last_error"
     private static let storageCloudKitReasonKey = "storage.cloudkit.last_reason_code"
     private static let storageModeActiveKey = "storage.mode.active"
@@ -96,6 +99,13 @@ enum ICloudBackupManager {
         let payload: Data
         let payloadHash: String?
         let updatedAt: Date?
+        let sourceDeviceID: String?
+        let snapshotVersion: Int?
+    }
+
+    private struct BackupSnapshotMetadata {
+        let sourceDeviceID: String?
+        let snapshotVersion: Int?
     }
 
     private enum BackupSyncRouteError: LocalizedError {
@@ -142,7 +152,7 @@ enum ICloudBackupManager {
         }
 
         do {
-            let snapshot = try makeSnapshot(from: modelContext)
+            let snapshot = try makeSnapshot(from: modelContext, bucket: bucket)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.withoutEscapingSlashes]
             encoder.dateEncodingStrategy = .iso8601
@@ -155,6 +165,7 @@ enum ICloudBackupManager {
             let cloudHashMatches = defaults.string(forKey: lastCloudHashKey) == payloadHash
             if localHashMatches && cloudHashMatches && !force {
                 defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
+                defaults.removeObject(forKey: localMutationTimestampDefaultsPrefix + bucket)
                 return
             }
 
@@ -211,7 +222,12 @@ enum ICloudBackupManager {
                 try? payload.write(to: backupURL, options: .atomic)
             }
 
-            let didRestore = try restorePayload(payload, modelContext: modelContext, bucket: bucket)
+            let didRestore = try restorePayload(
+                payload,
+                modelContext: modelContext,
+                bucket: bucket,
+                remoteUpdatedAt: remoteSnapshot.updatedAt
+            )
             if didRestore {
                 UserDefaults.standard.removeObject(forKey: lastCloudErrorDefaultsPrefix + bucket)
             }
@@ -241,7 +257,10 @@ enum ICloudBackupManager {
 
     static func noteLocalMutation(accountIdentifier: String) {
         let bucket = accountBucket(accountIdentifier)
-        UserDefaults.standard.set(true, forKey: localDirtyDefaultsPrefix + bucket)
+        let defaults = UserDefaults.standard
+        defaults.set(true, forKey: localDirtyDefaultsPrefix + bucket)
+        defaults.set(Date().timeIntervalSince1970, forKey: localMutationTimestampDefaultsPrefix + bucket)
+        defaults.set(currentSnapshotVersion(forBucket: bucket) + 1, forKey: snapshotVersionDefaultsPrefix + bucket)
     }
 
     static func hasPendingLocalChanges(accountIdentifier: String) -> Bool {
@@ -284,7 +303,8 @@ enum ICloudBackupManager {
     private static func restorePayload(
         _ payload: Data,
         modelContext: ModelContext,
-        bucket: String
+        bucket: String,
+        remoteUpdatedAt: Date? = nil
     ) throws -> Bool {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -303,12 +323,18 @@ enum ICloudBackupManager {
 
         let lastHashKey = lastHashDefaultsPrefix + bucket
         let lastCloudHashKey = lastCloudHashDefaultsPrefix + bucket
-        UserDefaults.standard.set(hashHex(data: payload), forKey: lastHashKey)
-        UserDefaults.standard.set(hashHex(data: payload), forKey: lastCloudHashKey)
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastSuccessDefaultsPrefix + bucket)
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastCloudSuccessDefaultsPrefix + bucket)
-        UserDefaults.standard.set(false, forKey: localDirtyDefaultsPrefix + bucket)
-        UserDefaults.standard.removeObject(forKey: lastErrorDefaultsKey)
+        let defaults = UserDefaults.standard
+        defaults.set(hashHex(data: payload), forKey: lastHashKey)
+        defaults.set(hashHex(data: payload), forKey: lastCloudHashKey)
+        defaults.set(Date().timeIntervalSince1970, forKey: lastSuccessDefaultsPrefix + bucket)
+        defaults.set((remoteUpdatedAt ?? Date()).timeIntervalSince1970, forKey: lastCloudSuccessDefaultsPrefix + bucket)
+        defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
+        defaults.removeObject(forKey: localMutationTimestampDefaultsPrefix + bucket)
+        defaults.removeObject(forKey: lastErrorDefaultsKey)
+        let resolvedSnapshotVersion = max(snapshot.snapshotVersion ?? 0, currentSnapshotVersion(forBucket: bucket))
+        if resolvedSnapshotVersion > 0 {
+            defaults.set(resolvedSnapshotVersion, forKey: snapshotVersionDefaultsPrefix + bucket)
+        }
         return true
     }
 
@@ -349,6 +375,10 @@ enum ICloudBackupManager {
         let storageReasonKey = storageCloudKitReasonKey
         let storageModeRequestedDefaultsKey = storageModeRequestedKey
         let storageModeActiveDefaultsKey = storageModeActiveKey
+        let localDirtyKey = localDirtyDefaultsPrefix + bucket
+        let localMutationTimestampKey = localMutationTimestampDefaultsPrefix + bucket
+        let snapshotVersionKey = snapshotVersionDefaultsPrefix + bucket
+        let shouldSeedSnapshotVersion = currentSnapshotVersion(forBucket: bucket) == 0
 
         if cloudUploadTasks[bucket] != nil {
             pendingCloudUploads[bucket] = PendingCloudUpload(
@@ -386,7 +416,11 @@ enum ICloudBackupManager {
                 let defaults = UserDefaults.standard
                 defaults.set(payloadHash, forKey: lastCloudHashKey)
                 defaults.set(Date().timeIntervalSince1970, forKey: cloudSuccessKey)
-                defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
+                defaults.set(false, forKey: localDirtyKey)
+                defaults.removeObject(forKey: localMutationTimestampKey)
+                if shouldSeedSnapshotVersion {
+                    defaults.set(1, forKey: snapshotVersionKey)
+                }
                 defaults.removeObject(forKey: cloudErrorKey)
                 defaults.removeObject(forKey: storageErrorKey)
                 defaults.removeObject(forKey: storageReasonKey)
@@ -560,10 +594,14 @@ enum ICloudBackupManager {
             )
         }
 
+        let snapshotMetadata = try? decodeSnapshotMetadata(from: payload)
+
         return RemoteSnapshotPayload(
             payload: payload,
             payloadHash: row.payload_hash,
-            updatedAt: parseServerDate(row.updated_at)
+            updatedAt: parseServerDate(row.updated_at),
+            sourceDeviceID: snapshotMetadata?.sourceDeviceID,
+            snapshotVersion: snapshotMetadata?.snapshotVersion
         )
     }
 
@@ -622,7 +660,15 @@ enum ICloudBackupManager {
             return true
         }
 
-        if let localPayload = try? encodeSnapshotPayload(from: modelContext),
+        let currentDeviceID = currentDeviceID()
+        let localSnapshotVersion = currentSnapshotVersion(forBucket: bucket)
+        if remoteSnapshot.sourceDeviceID == currentDeviceID,
+           let remoteSnapshotVersion = remoteSnapshot.snapshotVersion,
+           remoteSnapshotVersion <= localSnapshotVersion {
+            return true
+        }
+
+        if let localPayload = try? encodeSnapshotPayload(from: modelContext, bucket: bucket),
            let remoteHash = remoteSnapshot.payloadHash {
             let localHash = hashHex(data: localPayload)
             if localHash == remoteHash {
@@ -633,10 +679,17 @@ enum ICloudBackupManager {
         let defaults = UserDefaults.standard
         let lastCloudSuccess = dateFromDefaults(defaults, key: lastCloudSuccessDefaultsPrefix + bucket)
         let lastCloudHash = defaults.string(forKey: lastCloudHashDefaultsPrefix + bucket)
+        let lastLocalMutationAt = dateFromDefaults(defaults, key: localMutationTimestampDefaultsPrefix + bucket)
 
         guard let lastCloudSuccess else {
             // Device has local data but has never synced this account: prefer remote snapshot.
             return false
+        }
+
+        if let remoteUpdatedAt = remoteSnapshot.updatedAt,
+           let lastLocalMutationAt,
+           remoteUpdatedAt <= lastLocalMutationAt {
+            return true
         }
 
         if let remoteUpdatedAt = remoteSnapshot.updatedAt,
@@ -652,8 +705,8 @@ enum ICloudBackupManager {
         return true
     }
 
-    private static func encodeSnapshotPayload(from context: ModelContext) throws -> Data {
-        let snapshot = try makeSnapshot(from: context)
+    private static func encodeSnapshotPayload(from context: ModelContext, bucket: String) throws -> Data {
+        let snapshot = try makeSnapshot(from: context, bucket: bucket)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
@@ -668,6 +721,30 @@ enum ICloudBackupManager {
         let fallback = ISO8601DateFormatter()
         fallback.formatOptions = [.withInternetDateTime]
         return fallback.date(from: raw)
+    }
+
+    private static func decodeSnapshotMetadata(from payload: Data) throws -> BackupSnapshotMetadata {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let snapshot = try decoder.decode(BackupSnapshot.self, from: payload)
+        return BackupSnapshotMetadata(
+            sourceDeviceID: snapshot.sourceDeviceID,
+            snapshotVersion: snapshot.snapshotVersion
+        )
+    }
+
+    private static func currentDeviceID() -> String {
+        let defaults = UserDefaults.standard
+        if let existing = defaults.string(forKey: deviceIDDefaultsKey), !existing.isEmpty {
+            return existing
+        }
+        let generated = UUID().uuidString.lowercased()
+        defaults.set(generated, forKey: deviceIDDefaultsKey)
+        return generated
+    }
+
+    private static func currentSnapshotVersion(forBucket bucket: String) -> Int {
+        max(0, UserDefaults.standard.integer(forKey: snapshotVersionDefaultsPrefix + bucket))
     }
 
     nonisolated private static func reasonCode(for error: Error) -> String {
@@ -718,7 +795,7 @@ enum ICloudBackupManager {
         return "model_issue"
     }
 
-    private static func makeSnapshot(from context: ModelContext) throws -> BackupSnapshot {
+    private static func makeSnapshot(from context: ModelContext, bucket: String) throws -> BackupSnapshot {
         let categories = try context.fetch(FetchDescriptor<Category>())
         let folders = try context.fetch(FetchDescriptor<WalletFolder>())
         let wallets = try context.fetch(FetchDescriptor<Wallet>())
@@ -863,6 +940,8 @@ enum ICloudBackupManager {
         return BackupSnapshot(
             schemaVersion: schemaVersion,
             exportedAt: Date(),
+            sourceDeviceID: currentDeviceID(),
+            snapshotVersion: max(1, currentSnapshotVersion(forBucket: bucket)),
             categories: categoryRecords,
             walletFolders: folderRecords,
             wallets: walletRecords,
@@ -1089,6 +1168,8 @@ enum ICloudBackupManager {
 private struct BackupSnapshot: Codable {
     let schemaVersion: Int
     let exportedAt: Date
+    let sourceDeviceID: String?
+    let snapshotVersion: Int?
     let categories: [CategoryRecord]
     let walletFolders: [WalletFolderRecord]
     let wallets: [WalletRecord]

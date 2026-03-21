@@ -4338,6 +4338,8 @@ struct SettingsView: View {
                                 Text("Refresh sync status")
                                 Spacer()
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -4353,6 +4355,8 @@ struct SettingsView: View {
                                         .scaleEffect(0.8)
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -4368,6 +4372,8 @@ struct SettingsView: View {
                                         .scaleEffect(0.8)
                                 }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 6)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -4380,6 +4386,8 @@ struct SettingsView: View {
                                     Text("Reset debug lock")
                                     Spacer()
                                 }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 6)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)

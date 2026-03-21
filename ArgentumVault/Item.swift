@@ -38,9 +38,11 @@ enum BudgetPeriod: String, Codable, CaseIterable {
 
 @Model
 final class Category {
+    var syncID: String = UUID().uuidString.lowercased()
     var name: String = ""
     var type: CategoryType = CategoryType.expense
     var colorHex: String = "FFFFFFFF"
+    var deletedAt: Date?
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
     
@@ -54,15 +56,19 @@ final class Category {
     var recurringRules: [RecurringTransactionRule]?
     
     init(
+        syncID: String = UUID().uuidString.lowercased(),
         name: String,
         type: CategoryType,
         colorHex: String,
+        deletedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
+        self.syncID = syncID
         self.name = name
         self.type = type
         self.colorHex = colorHex
+        self.deletedAt = deletedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -70,9 +76,13 @@ final class Category {
 
 @Model
 final class Transaction {
+    var syncID: String = UUID().uuidString.lowercased()
     var amount: Decimal = 0
     var currencyCode: String = "USD"
     var date: Date = Date()
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
+    var deletedAt: Date?
     var note: String?
     var type: TransactionType?
     var walletNameSnapshot: String?
@@ -94,9 +104,13 @@ final class Transaction {
     var transferWallet: Wallet?
     
     init(
+        syncID: String = UUID().uuidString.lowercased(),
         amount: Decimal,
         currencyCode: String,
         date: Date = Date(),
+        createdAt: Date = Date(),
+        updatedAt: Date = Date(),
+        deletedAt: Date? = nil,
         note: String? = nil,
         type: TransactionType = TransactionType.expense,
         walletNameSnapshot: String? = nil,
@@ -112,9 +126,13 @@ final class Transaction {
         wallet: Wallet? = nil,
         transferWallet: Wallet? = nil
     ) {
+        self.syncID = syncID
         self.amount = amount
         self.currencyCode = currencyCode
         self.date = date
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.deletedAt = deletedAt
         self.note = note
         self.type = type
         self.walletNameSnapshot = walletNameSnapshot
@@ -134,24 +152,42 @@ final class Transaction {
 
 @Model
 final class Asset {
+    var syncID: String = UUID().uuidString.lowercased()
     var symbol: String = ""
     var name: String = ""
     var kind: AssetKind = AssetKind.fiat
+    var deletedAt: Date?
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
     
-    init(symbol: String, name: String, kind: AssetKind) {
+    init(
+        syncID: String = UUID().uuidString.lowercased(),
+        symbol: String,
+        name: String,
+        kind: AssetKind,
+        deletedAt: Date? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.syncID = syncID
         self.symbol = symbol
         self.name = name
         self.kind = kind
+        self.deletedAt = deletedAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 
 @Model
 final class Wallet {
+    var syncID: String = UUID().uuidString.lowercased()
     var name: String = ""
     var assetCode: String = "USD"
     var kind: AssetKind = AssetKind.fiat
     var balance: Decimal = 0
     var colorHex: String?
+    var deletedAt: Date?
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
     
@@ -167,19 +203,23 @@ final class Wallet {
     var recurringRules: [RecurringTransactionRule]?
     
     init(
+        syncID: String = UUID().uuidString.lowercased(),
         name: String,
         assetCode: String,
         kind: AssetKind,
         balance: Decimal,
         colorHex: String? = "FFFFFFFF",
+        deletedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
+        self.syncID = syncID
         self.name = name
         self.assetCode = assetCode
         self.kind = kind
         self.balance = balance
         self.colorHex = colorHex
+        self.deletedAt = deletedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -187,20 +227,33 @@ final class Wallet {
 
 @Model
 final class WalletFolder {
+    var syncID: String = UUID().uuidString.lowercased()
     var name: String = ""
+    var deletedAt: Date?
     var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     @Relationship(deleteRule: .nullify, inverse: \Wallet.folder)
     var wallets: [Wallet]?
     
-    init(name: String, createdAt: Date = Date()) {
+    init(
+        syncID: String = UUID().uuidString.lowercased(),
+        name: String,
+        deletedAt: Date? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.syncID = syncID
         self.name = name
+        self.deletedAt = deletedAt
         self.createdAt = createdAt
+        self.updatedAt = updatedAt
     }
 }
 
 @Model
 final class RecurringTransactionRule {
+    var syncID: String = UUID().uuidString.lowercased()
     var title: String = ""
     var amount: Decimal = 0
     var currencyCode: String = "USD"
@@ -210,6 +263,7 @@ final class RecurringTransactionRule {
     var nextRunDate: Date = Date()
     var note: String?
     var isActive: Bool = true
+    var deletedAt: Date?
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
@@ -218,6 +272,7 @@ final class RecurringTransactionRule {
     var wallet: Wallet?
 
     init(
+        syncID: String = UUID().uuidString.lowercased(),
         title: String,
         amount: Decimal,
         currencyCode: String,
@@ -227,11 +282,13 @@ final class RecurringTransactionRule {
         nextRunDate: Date = Date(),
         note: String? = nil,
         isActive: Bool = true,
+        deletedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         category: Category? = nil,
         wallet: Wallet? = nil
     ) {
+        self.syncID = syncID
         self.title = title
         self.amount = amount
         self.currencyCode = currencyCode
@@ -241,6 +298,7 @@ final class RecurringTransactionRule {
         self.nextRunDate = nextRunDate
         self.note = note
         self.isActive = isActive
+        self.deletedAt = deletedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.category = category
@@ -250,10 +308,12 @@ final class RecurringTransactionRule {
 
 @Model
 final class CategoryBudget {
+    var syncID: String = UUID().uuidString.lowercased()
     var amount: Decimal = 0
     var currencyCode: String = "USD"
     var period: BudgetPeriod = BudgetPeriod.monthly
     var isActive: Bool = true
+    var deletedAt: Date?
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
@@ -261,18 +321,22 @@ final class CategoryBudget {
     var category: Category?
 
     init(
+        syncID: String = UUID().uuidString.lowercased(),
         amount: Decimal,
         currencyCode: String,
         period: BudgetPeriod = .monthly,
         isActive: Bool = true,
+        deletedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         category: Category? = nil
     ) {
+        self.syncID = syncID
         self.amount = amount
         self.currencyCode = currencyCode
         self.period = period
         self.isActive = isActive
+        self.deletedAt = deletedAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.category = category
