@@ -12,6 +12,11 @@ enum ICloudBackupManager {
         let force: Bool
     }
 
+    private struct PendingBackupRetry {
+        let accountIdentifier: String
+        let force: Bool
+    }
+
     struct SnapshotDebugStatus {
         let accountBucket: String
         let storageMode: String
@@ -23,12 +28,13 @@ enum ICloudBackupManager {
         let lastCloudError: String?
     }
 
-    // Periodic safety backup. Primary trigger is save-driven backup in app runtime.
-    static let periodicIntervalNanoseconds: UInt64 = 900_000_000_000 // 15 minutes
+    // Lightweight periodic sync pass. Primary upload trigger is still save-driven backup.
+    static let periodicIntervalNanoseconds: UInt64 = 10_000_000_000 // 10 seconds
 
     private static let schemaVersion = 1
     private static let appSupportBackupFolder = "ArgentumVaultBackups"
     private static let supabaseSnapshotsTable = "av_backup_snapshots"
+    private static let supabaseOwnerUserIDField = "owner_user_id"
     private static let supabaseAccountBucketField = "account_bucket"
     private static let supabasePayloadBase64Field = "payload_base64"
     private static let supabasePayloadHashField = "payload_hash"
@@ -42,6 +48,7 @@ enum ICloudBackupManager {
     private static let lastErrorDefaultsKey = "backup.icloud.last_error"
     private static let lastCloudSuccessDefaultsPrefix = "backup.icloud.cloudkit.last_success."
     private static let lastCloudErrorDefaultsPrefix = "backup.icloud.cloudkit.last_error."
+    private static let localDirtyDefaultsPrefix = "backup.icloud.local_dirty."
     private static let storageCloudKitErrorKey = "storage.cloudkit.last_error"
     private static let storageCloudKitReasonKey = "storage.cloudkit.last_reason_code"
     private static let storageModeActiveKey = "storage.mode.active"
@@ -51,6 +58,9 @@ enum ICloudBackupManager {
     private static let minimumAttemptInterval: TimeInterval = 5
     private static var cloudUploadTasks: [String: Task<Void, Never>] = [:]
     private static var pendingCloudUploads: [String: PendingCloudUpload] = [:]
+    private static var backupRetryTasks: [String: Task<Void, Never>] = [:]
+    private static var pendingBackupRetries: [String: PendingBackupRetry] = [:]
+    private static var ignoredSaveEventsByBucket: [String: Int] = [:]
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -58,6 +68,7 @@ enum ICloudBackupManager {
     }()
 
     private struct SupabaseSnapshotUpsertRow: Encodable {
+        let owner_user_id: String
         let account_bucket: String
         let payload_base64: String
         let payload_hash: String
@@ -66,6 +77,7 @@ enum ICloudBackupManager {
     }
 
     private struct SupabaseSnapshotSelectRow: Decodable {
+        let owner_user_id: String?
         let account_bucket: String
         let payload_base64: String
         let payload_hash: String?
@@ -105,13 +117,27 @@ enum ICloudBackupManager {
         let defaults = UserDefaults.standard
         let lastAttempt = defaults.double(forKey: lastAttemptKey)
         if !force, lastAttempt > 0, (now - lastAttempt) < minimumAttemptInterval {
+            let remainingDelay = max(0.25, minimumAttemptInterval - (now - lastAttempt) + 0.25)
+            scheduleBackupRetry(
+                after: remainingDelay,
+                modelContext: modelContext,
+                bucket: bucket,
+                request: PendingBackupRetry(
+                    accountIdentifier: accountIdentifier,
+                    force: force
+                )
+            )
             return
         }
+        cancelScheduledBackupRetry(for: bucket)
         defaults.set(now, forKey: lastAttemptKey)
+
+        let hasCoreData = hasCoreFinancialData(in: modelContext)
 
         // Protect cloud snapshot from accidental overwrite with an empty state
         // right after first launch / fresh install on a new device.
-        if !force, !hasCoreFinancialData(in: modelContext) {
+        // If the account is already dirty, allow empty snapshots so deletions sync too.
+        if !force, !hasCoreData, !hasPendingLocalChanges(accountIdentifier: accountIdentifier) {
             return
         }
 
@@ -128,6 +154,7 @@ enum ICloudBackupManager {
             let localHashMatches = defaults.string(forKey: lastHashKey) == payloadHash
             let cloudHashMatches = defaults.string(forKey: lastCloudHashKey) == payloadHash
             if localHashMatches && cloudHashMatches && !force {
+                defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
                 return
             }
 
@@ -207,9 +234,32 @@ enum ICloudBackupManager {
         didRestore: Bool
     ) -> Bool {
         if didRestore {
-            return true
+            return false
         }
         return hasCoreFinancialData(in: modelContext)
+    }
+
+    static func noteLocalMutation(accountIdentifier: String) {
+        let bucket = accountBucket(accountIdentifier)
+        UserDefaults.standard.set(true, forKey: localDirtyDefaultsPrefix + bucket)
+    }
+
+    static func hasPendingLocalChanges(accountIdentifier: String) -> Bool {
+        let bucket = accountBucket(accountIdentifier)
+        return UserDefaults.standard.bool(forKey: localDirtyDefaultsPrefix + bucket)
+    }
+
+    static func consumeIgnoredSaveEventIfNeeded(accountIdentifier: String) -> Bool {
+        let bucket = accountBucket(accountIdentifier)
+        guard let count = ignoredSaveEventsByBucket[bucket], count > 0 else {
+            return false
+        }
+        if count == 1 {
+            ignoredSaveEventsByBucket.removeValue(forKey: bucket)
+        } else {
+            ignoredSaveEventsByBucket[bucket] = count - 1
+        }
+        return true
     }
 
     static func debugStatus(accountIdentifier: String) -> SnapshotDebugStatus {
@@ -244,6 +294,7 @@ enum ICloudBackupManager {
         do {
             try clearAllData(in: modelContext)
             try apply(snapshot: snapshot, to: modelContext)
+            ignoredSaveEventsByBucket[bucket, default: 0] += 1
             try modelContext.save()
         } catch {
             modelContext.rollback()
@@ -256,6 +307,7 @@ enum ICloudBackupManager {
         UserDefaults.standard.set(hashHex(data: payload), forKey: lastCloudHashKey)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastSuccessDefaultsPrefix + bucket)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastCloudSuccessDefaultsPrefix + bucket)
+        UserDefaults.standard.set(false, forKey: localDirtyDefaultsPrefix + bucket)
         UserDefaults.standard.removeObject(forKey: lastErrorDefaultsKey)
         return true
     }
@@ -334,6 +386,7 @@ enum ICloudBackupManager {
                 let defaults = UserDefaults.standard
                 defaults.set(payloadHash, forKey: lastCloudHashKey)
                 defaults.set(Date().timeIntervalSince1970, forKey: cloudSuccessKey)
+                defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
                 defaults.removeObject(forKey: cloudErrorKey)
                 defaults.removeObject(forKey: storageErrorKey)
                 defaults.removeObject(forKey: storageReasonKey)
@@ -349,6 +402,33 @@ enum ICloudBackupManager {
                 defaults.set("local", forKey: storageModeActiveDefaultsKey)
             }
         }
+    }
+
+    private static func scheduleBackupRetry(
+        after delay: TimeInterval,
+        modelContext: ModelContext,
+        bucket: String,
+        request: PendingBackupRetry
+    ) {
+        pendingBackupRetries[bucket] = request
+        backupRetryTasks[bucket]?.cancel()
+        backupRetryTasks[bucket] = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            let pendingRequest = pendingBackupRetries.removeValue(forKey: bucket) ?? request
+            backupRetryTasks[bucket] = nil
+            backupIfNeeded(
+                modelContext: modelContext,
+                accountIdentifier: pendingRequest.accountIdentifier,
+                force: pendingRequest.force
+            )
+        }
+    }
+
+    private static func cancelScheduledBackupRetry(for bucket: String) {
+        backupRetryTasks[bucket]?.cancel()
+        backupRetryTasks[bucket] = nil
+        pendingBackupRetries.removeValue(forKey: bucket)
     }
 
     private static func saveSnapshotPayloadToRemote(
@@ -374,8 +454,10 @@ enum ICloudBackupManager {
         bucket: String
     ) async throws {
         let client = try EmailAuthManager.syncClient()
+        let ownerUserID = try await EmailAuthManager.currentSessionUserID()
         let updatedAt = iso8601Formatter.string(from: Date())
         let row = SupabaseSnapshotUpsertRow(
+            owner_user_id: ownerUserID,
             account_bucket: bucket,
             payload_base64: payload.base64EncodedString(),
             payload_hash: payloadHash,
@@ -394,7 +476,7 @@ enum ICloudBackupManager {
                 .from(supabaseSnapshotsTable)
                 .upsert(
                     row,
-                    onConflict: supabaseAccountBucketField,
+                    onConflict: "\(supabaseOwnerUserIDField),\(supabaseAccountBucketField)",
                     returning: .minimal
                 )
                 .execute()
@@ -407,7 +489,8 @@ enum ICloudBackupManager {
 
         let existing: PostgrestResponse<[SupabaseSnapshotSelectRow]> = try await client
             .from(supabaseSnapshotsTable)
-            .select(supabaseAccountBucketField)
+            .select("\(supabaseOwnerUserIDField),\(supabaseAccountBucketField)")
+            .eq(supabaseOwnerUserIDField, value: ownerUserID)
             .eq(supabaseAccountBucketField, value: bucket)
             .limit(1)
             .execute()
@@ -421,6 +504,7 @@ enum ICloudBackupManager {
             _ = try await client
                 .from(supabaseSnapshotsTable)
                 .update(updateRow, returning: .minimal)
+                .eq(supabaseOwnerUserIDField, value: ownerUserID)
                 .eq(supabaseAccountBucketField, value: bucket)
                 .execute()
         }
@@ -452,11 +536,13 @@ enum ICloudBackupManager {
 
     private static func fetchSnapshotPayloadFromSupabase(bucket: String) async throws -> RemoteSnapshotPayload? {
         let client = try EmailAuthManager.syncClient()
+        let ownerUserID = try await EmailAuthManager.currentSessionUserID()
         let response: PostgrestResponse<[SupabaseSnapshotSelectRow]> = try await client
             .from(supabaseSnapshotsTable)
             .select(
-                "\(supabaseAccountBucketField),\(supabasePayloadBase64Field),\(supabasePayloadHashField),\(supabaseSchemaVersionField),\(supabaseUpdatedAtField)"
+                "\(supabaseOwnerUserIDField),\(supabaseAccountBucketField),\(supabasePayloadBase64Field),\(supabasePayloadHashField),\(supabaseSchemaVersionField),\(supabaseUpdatedAtField)"
             )
+            .eq(supabaseOwnerUserIDField, value: ownerUserID)
             .eq(supabaseAccountBucketField, value: bucket)
             .limit(1)
             .execute()
@@ -532,6 +618,10 @@ enum ICloudBackupManager {
     ) -> Bool {
         guard hasLocalCoreData else { return false }
 
+        if UserDefaults.standard.bool(forKey: localDirtyDefaultsPrefix + bucket) {
+            return true
+        }
+
         if let localPayload = try? encodeSnapshotPayload(from: modelContext),
            let remoteHash = remoteSnapshot.payloadHash {
             let localHash = hashHex(data: localPayload)
@@ -594,7 +684,10 @@ enum ICloudBackupManager {
             let pgDetail = postgrestError.detail?.lowercased() ?? ""
             let combined = "\(pgCode) \(pgMessage) \(pgDetail)"
 
-            if combined.contains("relation") && combined.contains("does not exist") {
+            if (combined.contains("relation") && combined.contains("does not exist"))
+                || combined.contains("schema cache")
+                || combined.contains("could not find the table")
+            {
                 return "supabase_schema"
             }
             if combined.contains("jwt")

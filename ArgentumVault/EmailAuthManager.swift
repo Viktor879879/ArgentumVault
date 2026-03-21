@@ -99,6 +99,21 @@ enum EmailAuthManager {
         try configuredClient()
     }
 
+    static func currentSessionUserID() async throws -> String {
+        let client = try configuredClient()
+
+        if let currentUser = client.auth.currentUser,
+           let normalizedUserID = normalized(userID: currentUser.id) {
+            return normalizedUserID
+        }
+
+        let sessionUser = try await client.auth.session.user
+        guard let normalizedUserID = normalized(userID: sessionUser.id) else {
+            throw EmailAuthError.storageFailure
+        }
+        return normalizedUserID
+    }
+
     private static func normalizedRequired(email: String) throws -> String {
         guard let normalized = normalized(email: email) else {
             throw EmailAuthError.invalidEmail

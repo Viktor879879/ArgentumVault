@@ -633,12 +633,12 @@ struct FirstLaunchSetupView: View {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
         case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         default:
             if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
                 return appleAccountID
             }
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         }
     }
 
@@ -4824,15 +4824,12 @@ struct SettingsView: View {
             guard !appleUserID.isEmpty else { return nil }
             return "apple:\(appleUserID)"
         case "email":
-            let email = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            guard !email.isEmpty else { return nil }
-            return "email:\(email)"
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         default:
             if !appleUserID.isEmpty {
                 return "apple:\(appleUserID)"
             }
-            let email = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return email.isEmpty ? nil : "email:\(email)"
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         }
     }
 
@@ -4843,6 +4840,7 @@ struct SettingsView: View {
             return
         }
         cloudDebugStatus = ICloudBackupManager.debugStatus(accountIdentifier: accountIdentifier)
+        cloudDebugMessage = "Sync status refreshed."
     }
 
     private func forceCloudBackupNow() {
@@ -4951,12 +4949,12 @@ struct SettingsView: View {
         case "apple":
             return SetupProfileStore.appleAccountID(appleUserID)
         case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         default:
             if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
                 return appleAccountID
             }
-            return SetupProfileStore.emailAccountID(emailUserEmail)
+            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
         }
     }
 
