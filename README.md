@@ -1,3 +1,6 @@
+<<<<<<< HEAD
+# ArgentumVault
+=======
 # Argentum Vault
 
 ## Local secrets
@@ -10,3 +13,4 @@ Sensitive values are overridden from local `Config/Secrets.xcconfig`.
 3. Build the app.
 
 `Config/Secrets.xcconfig` is gitignored.
+>>>>>>> e7f7d2999b9a266a8418c45383605c4abe66fbbd

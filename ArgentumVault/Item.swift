@@ -38,7 +38,6 @@ enum BudgetPeriod: String, Codable, CaseIterable {
 
 @Model
 final class Category {
-    var syncID: String = UUID().uuidString.lowercased()
     var name: String = ""
     var sourceLanguageCode: String?
     var localizedNamesJSON: String?
@@ -82,7 +81,6 @@ final class Category {
 
 @Model
 final class Transaction {
-    var syncID: String = UUID().uuidString.lowercased()
     var amount: Decimal = 0
     var currencyCode: String = "USD"
     var date: Date = Date()
@@ -158,7 +156,6 @@ final class Transaction {
 
 @Model
 final class Asset {
-    var syncID: String = UUID().uuidString.lowercased()
     var symbol: String = ""
     var name: String = ""
     var kind: AssetKind = AssetKind.fiat
@@ -187,7 +184,6 @@ final class Asset {
 
 @Model
 final class Wallet {
-    var syncID: String = UUID().uuidString.lowercased()
     var name: String = ""
     var assetCode: String = "USD"
     var kind: AssetKind = AssetKind.fiat
@@ -214,6 +210,7 @@ final class Wallet {
         assetCode: String,
         kind: AssetKind,
         balance: Decimal,
+
         colorHex: String? = "FFFFFFFF",
         deletedAt: Date? = nil,
         createdAt: Date = Date(),
@@ -224,6 +221,7 @@ final class Wallet {
         self.assetCode = assetCode
         self.kind = kind
         self.balance = balance
+
         self.colorHex = colorHex
         self.deletedAt = deletedAt
         self.createdAt = createdAt

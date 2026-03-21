@@ -3,6 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>ALPHA_VANTAGE_API_KEY</key>
+<<<<<<< HEAD
+	<string>O5214G3ZJ5DH4REF</string>
+=======
 	<string>$(ALPHA_VANTAGE_API_KEY)</string>
 	<key>GADApplicationIdentifier</key>
 	<string>$(GAD_APPLICATION_IDENTIFIER)</string>
