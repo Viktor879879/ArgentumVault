@@ -51,45 +51,27 @@ private struct AppBootstrapView: View {
         .task {
             await bootstrapIfNeeded()
         }
-        .onReceive(NotificationCenter.default.publisher(for: ModelContext.didSave)) { notification in
-            Task { @MainActor in
-                handleModelContextDidSave(notification)
-            }
-        }
-        .onChange(of: bootstrapAppleUserID) { _, _ in
-            Task { @MainActor in
-                await switchContainerIfNeeded(refreshEntitlements: false)
-            }
-        }
-        .onChange(of: bootstrapEmailUserEmail) { _, _ in
-            Task { @MainActor in
-                await switchContainerIfNeeded(refreshEntitlements: false)
-            }
-        }
-        .onChange(of: bootstrapEmailUserID) { _, _ in
-            Task { @MainActor in
-                await switchContainerIfNeeded(refreshEntitlements: false)
-            }
-        }
-        .onChange(of: bootstrapAuthMethod) { _, _ in
-            Task { @MainActor in
-                await switchContainerIfNeeded(refreshEntitlements: false)
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .accountSessionDidChange)) { _ in
-            Task { @MainActor in
-                await switchContainerIfNeeded(refreshEntitlements: false)
-            }
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            Task { @MainActor in
-                if newPhase == .active {
-                    await switchContainerIfNeeded(refreshEntitlements: true)
-                } else if newPhase == .inactive || newPhase == .background {
-                    performImmediateBackupIfPossible(force: true)
-                }
-            }
-        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: ModelContext.didSave),
+            perform: handleModelContextSaveNotification
+        )
+        .onChange(of: bootstrapAppleUserID, perform: handleBootstrapAppleIDChange)
+        .onChange(of: bootstrapEmailUserEmail, perform: handleBootstrapEmailChange)
+        .onChange(of: bootstrapEmailUserID, perform: handleBootstrapEmailUserIDChange)
+        .onChange(of: bootstrapAuthMethod, perform: handleBootstrapAuthMethodChange)
+        .onReceive(
+            NotificationCenter.default.publisher(for: .accountSessionDidChange),
+            perform: handleAccountSessionChangeNotification
+        )
+        .onReceive(
+            NotificationCenter.default.publisher(for: .modelStoreRestoreWillBegin),
+            perform: handleModelStoreRestoreWillBeginNotification
+        )
+        .onReceive(
+            NotificationCenter.default.publisher(for: .modelStoreDidRestore),
+            perform: handleModelStoreRestoreDidFinishNotification
+        )
+        .onChange(of: scenePhase, perform: handleScenePhaseChange)
     }
 
     @MainActor
@@ -137,8 +119,61 @@ private struct AppBootstrapView: View {
         )
     }
 
+    private func scheduleContainerSwitch(refreshEntitlements: Bool) {
+        Task { @MainActor in
+            await switchContainerIfNeeded(refreshEntitlements: refreshEntitlements)
+        }
+    }
+
+    private func handleModelContextSaveNotification(_ notification: Notification) {
+        Task { @MainActor in
+            handleModelContextDidSave(notification)
+        }
+    }
+
+    private func handleBootstrapAppleIDChange(_: String) {
+        scheduleContainerSwitch(refreshEntitlements: false)
+    }
+
+    private func handleBootstrapEmailChange(_: String) {
+        scheduleContainerSwitch(refreshEntitlements: false)
+    }
+
+    private func handleBootstrapEmailUserIDChange(_: String) {
+        scheduleContainerSwitch(refreshEntitlements: false)
+    }
+
+    private func handleBootstrapAuthMethodChange(_: String) {
+        scheduleContainerSwitch(refreshEntitlements: false)
+    }
+
+    private func handleAccountSessionChangeNotification(_: Notification) {
+        scheduleContainerSwitch(refreshEntitlements: false)
+    }
+
+    private func handleModelStoreRestoreWillBeginNotification(_: Notification) {
+        handleModelStoreRestoreWillBegin()
+    }
+
+    private func handleModelStoreRestoreDidFinishNotification(_ notification: Notification) {
+        handleModelStoreDidRestore(notification)
+    }
+
+    private func handleScenePhaseChange(_ newPhase: ScenePhase) {
+        Task { @MainActor in
+            if newPhase == .active {
+                await switchContainerIfNeeded(refreshEntitlements: true)
+            } else if newPhase == .inactive || newPhase == .background {
+                performImmediateBackupIfPossible(force: true)
+            }
+        }
+    }
+
     @MainActor
-    private func switchContainerIfNeeded(refreshEntitlements: Bool) async {
+    private func switchContainerIfNeeded(
+        refreshEntitlements: Bool,
+        forceRebuild: Bool = false
+    ) async {
         guard !isReconfiguringContainer else {
             hasPendingReconfigureRequest = true
             pendingReconfigureNeedsEntitlementRefresh = pendingReconfigureNeedsEntitlementRefresh || refreshEntitlements
@@ -171,7 +206,8 @@ private struct AppBootstrapView: View {
         let resolvedShouldEnableCloudBackup = StorageModePolicy.shouldRequestCloudKitStorage()
         let resolvedAccountIdentifier = StorageModePolicy.currentAccountIdentifier()
 
-        if let existingContainer = modelContainer,
+        if !forceRebuild,
+           let existingContainer = modelContainer,
            resolvedShouldUseCloudKit == isCloudStoreEnabled,
            resolvedAccountIdentifier == activeStoreAccountIdentifier {
             configureICloudBackupPipeline(
@@ -191,7 +227,8 @@ private struct AppBootstrapView: View {
             accountIdentifier: resolvedAccountIdentifier
         )
 
-        if let previousContainer,
+        if !forceRebuild,
+           let previousContainer,
            selection.usesCloudKit == previousUsesCloudStore,
            resolvedAccountIdentifier == activeStoreAccountIdentifier {
             // Avoid container churn while CloudKit remains unavailable (or unchanged).
@@ -206,11 +243,17 @@ private struct AppBootstrapView: View {
             return
         }
 
-        let shouldSwitchStoreType = previousContainer != nil
+        let shouldSwitchStoreType = (previousContainer != nil && forceRebuild)
+            || previousContainer != nil
             && (
                 selection.usesCloudKit != previousUsesCloudStore
                 || resolvedAccountIdentifier != activeStoreAccountIdentifier
             )
+
+        let shouldGateInitialPresentation = previousContainer == nil
+            && resolvedShouldEnableCloudBackup
+            && resolvedAccountIdentifier != nil
+            && !ICloudBackupManager.hasCoreFinancialData(in: ModelContext(selection.container))
 
         if shouldSwitchStoreType {
             periodicBackupTask?.cancel()
@@ -233,20 +276,32 @@ private struct AppBootstrapView: View {
             await Task.yield()
         }
 
+        if shouldGateInitialPresentation {
+            isSwitchingContainer = true
+        }
+
         modelContainer = selection.container
         isCloudStoreEnabled = selection.usesCloudKit
         activeStoreAccountIdentifier = resolvedAccountIdentifier
         AppStorageDiagnostics.persist(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
         scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
+
+        if previousContainerIdentifier != ObjectIdentifier(selection.container) {
+            containerEpoch += 1
+        }
+
+        if shouldGateInitialPresentation, let resolvedAccountIdentifier {
+            await performInitialBootstrapRestoreIfNeeded(
+                container: selection.container,
+                accountIdentifier: resolvedAccountIdentifier
+            )
+        }
+
         configureICloudBackupPipeline(
             requestedCloud: resolvedShouldEnableCloudBackup,
             usesCloudKit: selection.usesCloudKit,
             container: selection.container
         )
-
-        if previousContainerIdentifier != ObjectIdentifier(selection.container) {
-            containerEpoch += 1
-        }
     }
 
     @MainActor
@@ -282,6 +337,16 @@ private struct AppBootstrapView: View {
                 return
             }
 
+            if ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: accountIdentifier) {
+                let backupContext = ModelContext(container)
+                ICloudBackupManager.backupIfNeeded(
+                    modelContext: backupContext,
+                    accountIdentifier: accountIdentifier,
+                    force: false
+                )
+                return
+            }
+
             let restoreContext = ModelContext(container)
             let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
                 modelContext: restoreContext,
@@ -292,13 +357,20 @@ private struct AppBootstrapView: View {
             guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
                 return
             }
-
             if didRestore {
-                let backupContext = ModelContext(container)
+                await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+                return
+            }
+
+            let backupContext = ModelContext(container)
+            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                modelContext: backupContext,
+                didRestore: didRestore
+            ) {
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
                     accountIdentifier: accountIdentifier,
-                    force: true
+                    force: didRestore
                 )
             }
         }
@@ -316,11 +388,42 @@ private struct AppBootstrapView: View {
                 ) else {
                     continue
                 }
-                let backupContext = ModelContext(container)
-                ICloudBackupManager.backupIfNeeded(
-                    modelContext: backupContext,
+                if ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: latestAccountIdentifier) {
+                    let backupContext = ModelContext(container)
+                    ICloudBackupManager.backupIfNeeded(
+                        modelContext: backupContext,
+                        accountIdentifier: latestAccountIdentifier,
+                        force: false
+                    )
+                    continue
+                }
+                let syncContext = ModelContext(container)
+                let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
+                    modelContext: syncContext,
                     accountIdentifier: latestAccountIdentifier
-                )
+                )) ?? false
+                guard !Task.isCancelled else { break }
+                guard isBackupPipelineContextCurrent(
+                    container: container,
+                    accountIdentifier: latestAccountIdentifier
+                ) else {
+                    continue
+                }
+                if didRestore {
+                    await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+                    continue
+                }
+                let backupContext = ModelContext(container)
+                if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                    modelContext: backupContext,
+                    didRestore: didRestore
+                ) {
+                    ICloudBackupManager.backupIfNeeded(
+                        modelContext: backupContext,
+                        accountIdentifier: latestAccountIdentifier,
+                        force: didRestore
+                    )
+                }
             }
         }
     }
@@ -329,15 +432,39 @@ private struct AppBootstrapView: View {
     private func handleModelContextDidSave(_ notification: Notification) {
         guard notification.object is ModelContext else { return }
         guard modelContainer != nil else { return }
-        guard StorageModePolicy.currentCloudBackupAccountIdentifier() != nil else { return }
+        guard let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else { return }
         guard !isSwitchingContainer else { return }
+        guard !ICloudBackupManager.consumeIgnoredSaveEventIfNeeded(accountIdentifier: accountIdentifier) else {
+            return
+        }
+
+        ICloudBackupManager.noteLocalMutation(accountIdentifier: accountIdentifier)
 
         saveTriggeredBackupTask?.cancel()
         saveTriggeredBackupTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled else { return }
             performImmediateBackupIfPossible(force: false)
         }
+    }
+
+    @MainActor
+    private func handleModelStoreRestoreWillBegin() {
+        guard modelContainer != nil else { return }
+        isSwitchingContainer = true
+    }
+
+    @MainActor
+    private func handleModelStoreDidRestore(_ notification: Notification) {
+        guard modelContainer != nil else { return }
+        let didRestore = (notification.userInfo?["restored"] as? Bool) ?? true
+        if didRestore {
+            Task { @MainActor in
+                await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+            }
+            return
+        }
+        isSwitchingContainer = false
     }
 
     @MainActor
@@ -370,6 +497,48 @@ private struct AppBootstrapView: View {
         guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
         guard StorageModePolicy.currentCloudBackupAccountIdentifier() == accountIdentifier else { return false }
         return true
+    }
+
+    @MainActor
+    private func isBootstrapRestoreContextCurrent(
+        container: ModelContainer,
+        accountIdentifier: String
+    ) -> Bool {
+        guard let currentContainer = modelContainer else { return false }
+        guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
+        guard StorageModePolicy.currentCloudBackupAccountIdentifier() == accountIdentifier else { return false }
+        return true
+    }
+
+    @MainActor
+    private func performInitialBootstrapRestoreIfNeeded(
+        container: ModelContainer,
+        accountIdentifier: String
+    ) async {
+        let maxAttempts = 3
+
+        for attempt in 0..<maxAttempts {
+            guard !Task.isCancelled else { return }
+            guard isBootstrapRestoreContextCurrent(
+                container: container,
+                accountIdentifier: accountIdentifier
+            ) else {
+                return
+            }
+            let restoreContext = ModelContext(container)
+            let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
+                modelContext: restoreContext,
+                accountIdentifier: accountIdentifier
+            )) ?? false
+            if didRestore {
+                return
+            }
+            if ICloudBackupManager.hasCoreFinancialData(in: ModelContext(container)) {
+                return
+            }
+            guard attempt < (maxAttempts - 1) else { return }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+        }
     }
 }
 
@@ -548,7 +717,10 @@ private enum DataStoreMigrator {
         var categoryMap: [PersistentIdentifier: Category] = [:]
         for sourceCategory in sourceCategories {
             let copiedCategory = Category(
+                syncID: sourceCategory.syncID,
                 name: sourceCategory.name,
+                sourceLanguageCode: sourceCategory.sourceLanguageCode,
+                localizedNamesJSON: sourceCategory.localizedNamesJSON,
                 type: sourceCategory.type,
                 colorHex: sourceCategory.colorHex,
                 createdAt: sourceCategory.createdAt,
@@ -814,7 +986,7 @@ private enum StorageModePolicy {
     private static let authMethodKey = "authMethod"
 
     static func currentCloudBackupAccountIdentifier() -> String? {
-        currentAppleAccountIdentifier()
+        currentAppleAccountIdentifier() ?? currentEmailCloudBackupIdentifier()
     }
 
     static func currentAppleAccountIdentifier() -> String? {
@@ -827,17 +999,17 @@ private enum StorageModePolicy {
 
     static func currentEmailAccountIdentifier() -> String? {
         let defaults = UserDefaults.standard
-        let emailUserEmail = defaults.string(forKey: emailUserEmailKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if !emailUserEmail.isEmpty {
-            return "email:\(emailUserEmail)"
-        }
         let emailUserID = defaults.string(forKey: emailUserIDKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() ?? ""
         if !emailUserID.isEmpty {
             return "email_uid:\(emailUserID)"
+        }
+        let emailUserEmail = defaults.string(forKey: emailUserEmailKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if !emailUserEmail.isEmpty {
+            return "email:\(emailUserEmail)"
         }
         return nil
     }
@@ -858,7 +1030,6 @@ private enum StorageModePolicy {
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {
-        // Until backend email auth is introduced, cloud backup/sync is Apple-ID-only.
         return currentCloudBackupAccountIdentifier() != nil
     }
 }
