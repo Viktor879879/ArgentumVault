@@ -347,6 +347,39 @@ private struct AppBootstrapView: View {
                 return
             }
 
+            let hasLocalCoreData = ICloudBackupManager.hasCoreFinancialData(in: ModelContext(container))
+
+            // Do not run destructive snapshot restore against a live foreground UI that already
+            // has local data-bound views on screen. Gate only the empty-store bootstrap/login path.
+            if scenePhase == .active && hasLocalCoreData {
+                let backupContext = ModelContext(container)
+                if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                    modelContext: backupContext,
+                    didRestore: false
+                ) {
+                    ICloudBackupManager.backupIfNeeded(
+                        modelContext: backupContext,
+                        accountIdentifier: accountIdentifier,
+                        force: false
+                    )
+                }
+                return
+            }
+
+            if scenePhase == .active && !hasLocalCoreData {
+                isSwitchingContainer = true
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else {
+                    isSwitchingContainer = false
+                    return
+                }
+                guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
+                    isSwitchingContainer = false
+                    return
+                }
+            }
+
             let restoreContext = ModelContext(container)
             let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
                 modelContext: restoreContext,
@@ -358,8 +391,12 @@ private struct AppBootstrapView: View {
                 return
             }
             if didRestore {
-                await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+                refreshViewTreeAfterRestore()
                 return
+            }
+
+            if scenePhase == .active && !hasLocalCoreData {
+                isSwitchingContainer = false
             }
 
             let backupContext = ModelContext(container)
@@ -397,6 +434,15 @@ private struct AppBootstrapView: View {
                     )
                     continue
                 }
+
+                // Full snapshot restore invalidates live SwiftData objects.
+                // Avoid destructive pull-sync passes while the app is actively rendering UI.
+                // Foreground sessions still upload automatically; remote restore runs on cold start,
+                // manual restore, and the next non-active lifecycle transition.
+                if scenePhase == .active {
+                    continue
+                }
+
                 let syncContext = ModelContext(container)
                 let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
                     modelContext: syncContext,
@@ -410,7 +456,7 @@ private struct AppBootstrapView: View {
                     continue
                 }
                 if didRestore {
-                    await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+                    refreshViewTreeAfterRestore()
                     continue
                 }
                 let backupContext = ModelContext(container)
@@ -459,11 +505,19 @@ private struct AppBootstrapView: View {
         guard modelContainer != nil else { return }
         let didRestore = (notification.userInfo?["restored"] as? Bool) ?? true
         if didRestore {
-            Task { @MainActor in
-                await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
-            }
+            refreshViewTreeAfterRestore()
             return
         }
+        isSwitchingContainer = false
+    }
+
+    @MainActor
+    private func refreshViewTreeAfterRestore() {
+        guard modelContainer != nil else {
+            isSwitchingContainer = false
+            return
+        }
+        containerEpoch += 1
         isSwitchingContainer = false
     }
 

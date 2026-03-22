@@ -56,6 +56,31 @@ private struct AdaptiveRootContainer<Content: View>: View {
     }
 }
 
+private enum RootTab: Hashable {
+    case home
+    case analytics
+    case settings
+}
+
+private enum TransactionHistoryDateFilterMode: String, CaseIterable, Identifiable {
+    case all
+    case day
+    case period
+
+    var id: String { rawValue }
+
+    func title(lang: String) -> String {
+        switch self {
+        case .all:
+            return L10n.text("history.filter.date.mode.all", lang: lang)
+        case .day:
+            return L10n.text("history.filter.date.mode.day", lang: lang)
+        case .period:
+            return L10n.text("history.filter.date.mode.period", lang: lang)
+        }
+    }
+}
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
@@ -81,6 +106,7 @@ struct ContentView: View {
     @State private var showSplash = true
     @State private var showOnboarding = false
     @State private var showGlobalPaywall = false
+    @State private var selectedTab: RootTab = .home
     
     private var uiLanguageCode: String {
         if appLanguageCode == "system" {
@@ -115,18 +141,21 @@ struct ContentView: View {
             } else {
                 AdaptiveRootContainer(maxWidth: 1120) {
                     VStack(spacing: 0) {
-                        TabView {
+                        TabView(selection: $selectedTab) {
                             HomeView(rateService: rateService)
+                                .tag(RootTab.home)
                                 .tabItem {
                                     Label(L10n.text("tab.home", lang: uiLanguageCode), systemImage: "house.fill")
                                 }
 
                             AnalyticsView(rateService: rateService)
+                                .tag(RootTab.analytics)
                                 .tabItem {
                                     Label(L10n.text("tab.analytics", lang: uiLanguageCode), systemImage: "chart.pie.fill")
                                 }
 
                             SettingsView(rateService: rateService)
+                                .tag(RootTab.settings)
                                 .tabItem {
                                     Label(L10n.text("tab.settings", lang: uiLanguageCode), systemImage: "gearshape.fill")
                                 }
@@ -151,6 +180,16 @@ struct ContentView: View {
         }
         .dismissKeyboardOnTap()
         .tint(interactiveTint)
+        .onChange(of: selectedTab) {
+#if canImport(UIKit)
+            UIApplication.shared.sendAction(
+                #selector(UIResponder.resignFirstResponder),
+                to: nil,
+                from: nil,
+                for: nil
+            )
+#endif
+        }
         .task {
 #if DEBUG
             if debugResetFirstLaunchOnce {
@@ -196,10 +235,6 @@ struct ContentView: View {
                     languageCode: uiLanguageCode,
                     didSeedDefaultCategories: &didSeedDefaultCategories
                 )
-                CategoryLocalizationService.scheduleBackfillAll(
-                    modelContext: modelContext,
-                    currentLanguageCode: uiLanguageCode
-                )
             }
             await subscriptionManager.start()
         }
@@ -218,13 +253,6 @@ struct ContentView: View {
             if !didShowOnboarding || forceShowOnboardingOnce {
                 showOnboarding = true
             }
-        }
-        .onChange(of: appLanguageCode) {
-            guard didCompleteInitialSetup else { return }
-            CategoryLocalizationService.scheduleBackfillAll(
-                modelContext: modelContext,
-                currentLanguageCode: uiLanguageCode
-            )
         }
         .fullScreenCover(isPresented: $showOnboarding) {
             OnboardingView(lang: uiLanguageCode) {
@@ -729,6 +757,11 @@ struct HomeView: View {
     @State private var knownFolderIDs: Set<PersistentIdentifier> = []
     @State private var didInitializeFolderCollapse = false
     @State private var transactionSearchText = ""
+    @State private var transactionDateFilterMode: TransactionHistoryDateFilterMode = .all
+    @State private var transactionSelectedDay = Date()
+    @State private var transactionRangeStart = Calendar.autoupdatingCurrent.startOfDay(for: Date())
+    @State private var transactionRangeEnd = Date()
+    @FocusState private var isTransactionSearchFocused: Bool
     
     private var ungroupedWallets: [Wallet] {
         wallets.filter { $0.folder == nil }
@@ -759,7 +792,7 @@ struct HomeView: View {
 
     private var filteredTransactions: [Transaction] {
         transactions.filter { transaction in
-            matchesTransactionSearch(transaction)
+            matchesTransactionSearch(transaction) && matchesTransactionDateFilter(transaction)
         }
     }
     
@@ -854,6 +887,43 @@ struct HomeView: View {
                     )
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .focused($isTransactionSearchFocused)
+
+                    Picker(
+                        L10n.text("history.filter.date", lang: uiLanguageCode),
+                        selection: $transactionDateFilterMode
+                    ) {
+                        ForEach(TransactionHistoryDateFilterMode.allCases) { mode in
+                            Text(mode.title(lang: uiLanguageCode)).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if transactionDateFilterMode == .day {
+                        DatePicker(
+                            L10n.text("common.date", lang: uiLanguageCode),
+                            selection: $transactionSelectedDay,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+                    } else if transactionDateFilterMode == .period {
+                        DatePicker(
+                            L10n.text("history.filter.date.start", lang: uiLanguageCode),
+                            selection: $transactionRangeStart,
+                            in: ...transactionRangeEnd,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+
+                        DatePicker(
+                            L10n.text("history.filter.date.end", lang: uiLanguageCode),
+                            selection: $transactionRangeEnd,
+                            in: transactionRangeStart...,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+                    }
 
                     if transactions.isEmpty {
                         Text(L10n.text("home.no_transactions", lang: uiLanguageCode))
@@ -885,11 +955,18 @@ struct HomeView: View {
                 }
             }
             .navigationTitle(L10n.text("app.name", lang: uiLanguageCode))
+            .keyboardDismissBehavior()
             .onAppear {
                 initializeFolderCollapseIfNeeded()
             }
+            .onDisappear {
+                dismissTransactionSearchFocus()
+            }
             .onChange(of: walletFolders.count) {
                 syncFolderCollapseState()
+            }
+            .onChange(of: transactionDateFilterMode) {
+                dismissTransactionSearchFocus()
             }
             .onChange(of: baseCurrencyCode) {
                 let snapshots = walletRateSnapshots
@@ -1080,7 +1157,8 @@ struct HomeView: View {
                 rule.nextRunDate = nextRecurringDate(
                     after: scheduledDate,
                     frequency: rule.frequency,
-                    interval: rule.interval
+                    interval: rule.interval,
+                    selectedMonthDays: rule.monthDays
                 )
                 rule.updatedAt = now
                 generatedCount += 1
@@ -1127,7 +1205,12 @@ struct HomeView: View {
         return trimmed
     }
 
-    private func nextRecurringDate(after date: Date, frequency: RecurrenceFrequency, interval: Int) -> Date {
+    private func nextRecurringDate(
+        after date: Date,
+        frequency: RecurrenceFrequency,
+        interval: Int,
+        selectedMonthDays: [Int] = []
+    ) -> Date {
         let calendar = Calendar.current
         let safeInterval = max(1, interval)
         switch frequency {
@@ -1137,6 +1220,17 @@ struct HomeView: View {
             return calendar.date(byAdding: .weekOfYear, value: safeInterval, to: date) ?? date
         case .monthly:
             return calendar.date(byAdding: .month, value: safeInterval, to: date) ?? date
+        case .monthlySelectedDays:
+            let normalizedDays = RecurringTransactionRule.normalizeMonthDays(selectedMonthDays)
+            guard !normalizedDays.isEmpty else {
+                return calendar.date(byAdding: .month, value: 1, to: date) ?? date
+            }
+            return nextRecurringMonthlySelectedDaysDate(
+                after: date,
+                selectedDays: normalizedDays,
+                timeSource: date,
+                calendar: calendar
+            )
         }
     }
 
@@ -1169,6 +1263,40 @@ struct HomeView: View {
             .lowercased()
 
         return searchBlob.contains(query)
+    }
+
+    private func matchesTransactionDateFilter(_ transaction: Transaction) -> Bool {
+        let calendar = Calendar.autoupdatingCurrent
+
+        switch transactionDateFilterMode {
+        case .all:
+            return true
+        case .day:
+            return calendar.isDate(transaction.date, inSameDayAs: transactionSelectedDay)
+        case .period:
+            let normalizedRange = normalizedTransactionRange
+            return transaction.date >= normalizedRange.start && transaction.date <= normalizedRange.end
+        }
+    }
+
+    private var normalizedTransactionRange: (start: Date, end: Date) {
+        let calendar = Calendar.autoupdatingCurrent
+        let startDate = calendar.startOfDay(for: min(transactionRangeStart, transactionRangeEnd))
+        let endAnchor = calendar.startOfDay(for: max(transactionRangeStart, transactionRangeEnd))
+        let endDate = calendar.date(byAdding: DateComponents(day: 1, second: -1), to: endAnchor) ?? endAnchor
+        return (startDate, endDate)
+    }
+
+    private func dismissTransactionSearchFocus() {
+        isTransactionSearchFocused = false
+#if canImport(UIKit)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+#endif
     }
 
     private func resolvedTransactionType(for transaction: Transaction) -> TransactionType {
@@ -1436,8 +1564,87 @@ extension RecurrenceFrequency {
             return L10n.text("recurring.frequency.weekly", lang: lang)
         case .monthly:
             return L10n.text("recurring.frequency.monthly", lang: lang)
+        case .monthlySelectedDays:
+            return L10n.text("recurring.frequency.monthly_selected_days", lang: lang)
         }
     }
+}
+
+private func normalizedRecurringMonthDaysForMonth(
+    _ selectedDays: [Int],
+    in monthDate: Date,
+    calendar: Calendar = .current
+) -> [Int] {
+    let rawDays = RecurringTransactionRule.normalizeMonthDays(selectedDays)
+    guard let monthRange = calendar.range(of: .day, in: .month, for: monthDate) else {
+        return rawDays
+    }
+    return Array(Set(rawDays.map { min($0, monthRange.count) })).sorted()
+}
+
+private func makeRecurringMonthlyCandidate(
+    monthDate: Date,
+    day: Int,
+    timeSource: Date,
+    calendar: Calendar = .current
+) -> Date? {
+    var monthComponents = calendar.dateComponents([.year, .month], from: monthDate)
+    let timeComponents = calendar.dateComponents([.hour, .minute, .second], from: timeSource)
+    monthComponents.day = day
+    monthComponents.hour = timeComponents.hour ?? 0
+    monthComponents.minute = timeComponents.minute ?? 0
+    monthComponents.second = timeComponents.second ?? 0
+    return calendar.date(from: monthComponents)
+}
+
+private func nextRecurringMonthlySelectedDaysDate(
+    after referenceDate: Date,
+    selectedDays: [Int],
+    timeSource: Date,
+    calendar: Calendar = .current
+) -> Date {
+    let searchStart = referenceDate.addingTimeInterval(1)
+
+    for monthOffset in 0..<24 {
+        guard let targetMonth = calendar.date(byAdding: .month, value: monthOffset, to: searchStart) else { continue }
+        let validDays = normalizedRecurringMonthDaysForMonth(selectedDays, in: targetMonth, calendar: calendar)
+        for day in validDays {
+            guard let candidate = makeRecurringMonthlyCandidate(
+                monthDate: targetMonth,
+                day: day,
+                timeSource: timeSource,
+                calendar: calendar
+            ) else {
+                continue
+            }
+            if candidate > referenceDate {
+                return candidate
+            }
+        }
+    }
+
+    return calendar.date(byAdding: .month, value: 1, to: referenceDate) ?? referenceDate
+}
+
+private func firstRecurringMonthlySelectedDaysDate(
+    from referenceDate: Date,
+    selectedDays: [Int],
+    timeSource: Date,
+    calendar: Calendar = .current
+) -> Date {
+    let baseline = referenceDate.addingTimeInterval(-1)
+    return nextRecurringMonthlySelectedDaysDate(
+        after: baseline,
+        selectedDays: selectedDays,
+        timeSource: timeSource,
+        calendar: calendar
+    )
+}
+
+private func recurringMonthDaysText(_ days: [Int]) -> String {
+    RecurringTransactionRule.normalizeMonthDays(days)
+        .map(String.init)
+        .joined(separator: ", ")
 }
 
 enum AnalyticsMode: String, CaseIterable {
@@ -4521,7 +4728,7 @@ struct SettingsView: View {
                                 }
                                 Text("\(DecimalFormatter.string(from: rule.amount)) \(rule.currencyCode)")
                                     .font(.subheadline.weight(.semibold))
-                                Text("\(rule.frequency.title(lang: uiLanguageCode)) • \(L10n.text("recurring.every", lang: uiLanguageCode)) \(rule.interval)")
+                                Text(recurringScheduleText(for: rule))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Text("\(L10n.text("recurring.next_run", lang: uiLanguageCode)): \(recurringDateText(rule.nextRunDate))")
@@ -4764,6 +4971,14 @@ struct SettingsView: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    private func recurringScheduleText(for rule: RecurringTransactionRule) -> String {
+        if rule.frequency == .monthlySelectedDays {
+            let daysText = recurringMonthDaysText(rule.monthDays)
+            return "\(rule.frequency.title(lang: uiLanguageCode)) • \(L10n.text("recurring.month_days.summary", lang: uiLanguageCode)) \(daysText)"
+        }
+        return "\(rule.frequency.title(lang: uiLanguageCode)) • \(L10n.text("recurring.every", lang: uiLanguageCode)) \(rule.interval)"
     }
 
     private func handleAppleSignIn(result: Result<ASAuthorization, Error>) {
@@ -5079,6 +5294,7 @@ struct AddRecurringRuleView: View {
     @State private var type: TransactionType
     @State private var frequency: RecurrenceFrequency
     @State private var interval: Int
+    @State private var selectedMonthDays: Set<Int>
     @State private var nextRunDate: Date
     @State private var selectedCategoryID: PersistentIdentifier?
     @State private var selectedWalletID: PersistentIdentifier?
@@ -5096,6 +5312,7 @@ struct AddRecurringRuleView: View {
         _type = State(initialValue: resolvedType)
         _frequency = State(initialValue: rule?.frequency ?? .monthly)
         _interval = State(initialValue: max(1, rule?.interval ?? 1))
+        _selectedMonthDays = State(initialValue: Set(rule?.monthDays ?? []))
         _nextRunDate = State(initialValue: rule?.nextRunDate ?? Date())
         _selectedCategoryID = State(initialValue: rule?.category?.persistentModelID)
         _selectedWalletID = State(initialValue: rule?.wallet?.persistentModelID)
@@ -5136,10 +5353,39 @@ struct AddRecurringRuleView: View {
             }
     }
 
+    private var monthDayGridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(minimum: 32, maximum: 48), spacing: 8), count: 7)
+    }
+
+    private var normalizedSelectedMonthDays: [Int] {
+        RecurringTransactionRule.normalizeMonthDays(Array(selectedMonthDays))
+    }
+
+    private var customMonthlyNextRunDate: Date? {
+        guard frequency == .monthlySelectedDays else { return nil }
+        guard !normalizedSelectedMonthDays.isEmpty else { return nil }
+        return firstRecurringMonthlySelectedDaysDate(
+            from: Date(),
+            selectedDays: normalizedSelectedMonthDays,
+            timeSource: nextRunDate
+        )
+    }
+
+    private var selectedMonthDaysSummary: String {
+        let daysText = recurringMonthDaysText(normalizedSelectedMonthDays)
+        guard !daysText.isEmpty else {
+            return L10n.text("recurring.month_days.empty", lang: uiLanguageCode)
+        }
+        return "\(L10n.text("recurring.month_days.summary", lang: uiLanguageCode)) \(daysText)"
+    }
+
     private var canSave: Bool {
         guard parsedAmount != nil else { return false }
         guard selectedWallet != nil else { return false }
         guard selectedCategoryID != nil else { return false }
+        if frequency == .monthlySelectedDays && normalizedSelectedMonthDays.isEmpty {
+            return false
+        }
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return !trimmedTitle.isEmpty
     }
@@ -5201,17 +5447,56 @@ struct AddRecurringRuleView: View {
                     }
                     .pickerStyle(.menu)
 
-                    Stepper(
-                        "\(L10n.text("recurring.interval", lang: uiLanguageCode)): \(interval)",
-                        value: $interval,
-                        in: 1...365
-                    )
+                    if frequency == .monthlySelectedDays {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(L10n.text("recurring.month_days.label", lang: uiLanguageCode))
+                                .font(.subheadline.weight(.semibold))
+                            LazyVGrid(columns: monthDayGridColumns, spacing: 8) {
+                                ForEach(1...31, id: \.self) { day in
+                                    Button {
+                                        toggleMonthDay(day)
+                                    } label: {
+                                        Text("\(day)")
+                                            .font(.subheadline.weight(.semibold))
+                                            .frame(maxWidth: .infinity, minHeight: 36)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                    .fill(selectedMonthDays.contains(day) ? Color.accentColor : Color.secondary.opacity(0.12))
+                                            )
+                                            .foregroundStyle(selectedMonthDays.contains(day) ? Color.white : Color.primary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            Text(selectedMonthDaysSummary)
+                                .font(.caption)
+                                .foregroundStyle(normalizedSelectedMonthDays.isEmpty ? .red : .secondary)
+                        }
 
-                    DatePicker(
-                        L10n.text("recurring.next_run", lang: uiLanguageCode),
-                        selection: $nextRunDate,
-                        displayedComponents: [.date, .hourAndMinute]
-                    )
+                        DatePicker(
+                            L10n.text("recurring.time", lang: uiLanguageCode),
+                            selection: $nextRunDate,
+                            displayedComponents: [.hourAndMinute]
+                        )
+
+                        if let customMonthlyNextRunDate {
+                            Text("\(L10n.text("recurring.next_run", lang: uiLanguageCode)): \(recurringDateText(customMonthlyNextRunDate))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Stepper(
+                            "\(L10n.text("recurring.interval", lang: uiLanguageCode)): \(interval)",
+                            value: $interval,
+                            in: 1...365
+                        )
+
+                        DatePicker(
+                            L10n.text("recurring.next_run", lang: uiLanguageCode),
+                            selection: $nextRunDate,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                    }
                 }
 
                 Section(L10n.text("common.comment", lang: uiLanguageCode)) {
@@ -5243,6 +5528,15 @@ struct AddRecurringRuleView: View {
                     self.selectedCategoryID = nil
                 }
             }
+            .onChange(of: frequency) {
+                if frequency == .monthlySelectedDays {
+                    interval = 1
+                    if selectedMonthDays.isEmpty {
+                        let currentDay = Calendar.current.component(.day, from: nextRunDate)
+                        selectedMonthDays = [currentDay]
+                    }
+                }
+            }
             .onAppear {
                 normalizeSelections()
             }
@@ -5258,6 +5552,9 @@ struct AddRecurringRuleView: View {
            categories.first(where: { $0.persistentModelID == selectedCategoryID }) == nil {
             self.selectedCategoryID = nil
         }
+        if frequency == .monthlySelectedDays && selectedMonthDays.isEmpty {
+            selectedMonthDays = [Calendar.current.component(.day, from: nextRunDate)]
+        }
     }
 
     private func saveRule() {
@@ -5267,6 +5564,22 @@ struct AddRecurringRuleView: View {
               let category = categories.first(where: { $0.persistentModelID == categoryID }) else {
             return
         }
+        let monthDays = normalizedSelectedMonthDays
+        if frequency == .monthlySelectedDays && monthDays.isEmpty {
+            return
+        }
+        let resolvedMonthDays = frequency == .monthlySelectedDays ? monthDays : []
+        let resolvedNextRunDate: Date = {
+            if frequency == .monthlySelectedDays {
+                return firstRecurringMonthlySelectedDaysDate(
+                    from: Date(),
+                    selectedDays: resolvedMonthDays,
+                    timeSource: nextRunDate
+                )
+            }
+            return nextRunDate
+        }()
+        let resolvedInterval = frequency == .monthlySelectedDays ? 1 : max(1, interval)
 
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5277,8 +5590,9 @@ struct AddRecurringRuleView: View {
             rule.currencyCode = wallet.assetCode
             rule.type = type
             rule.frequency = frequency
-            rule.interval = max(1, interval)
-            rule.nextRunDate = nextRunDate
+            rule.interval = resolvedInterval
+            rule.monthDays = resolvedMonthDays
+            rule.nextRunDate = resolvedNextRunDate
             rule.note = trimmedNote.isEmpty ? nil : trimmedNote
             rule.isActive = isActive
             rule.category = category
@@ -5291,8 +5605,9 @@ struct AddRecurringRuleView: View {
                 currencyCode: wallet.assetCode,
                 type: type,
                 frequency: frequency,
-                interval: max(1, interval),
-                nextRunDate: nextRunDate,
+                interval: resolvedInterval,
+                monthDaysCSV: RecurringTransactionRule.encodeMonthDays(resolvedMonthDays),
+                nextRunDate: resolvedNextRunDate,
                 note: trimmedNote.isEmpty ? nil : trimmedNote,
                 isActive: isActive,
                 category: category,
@@ -5301,6 +5616,22 @@ struct AddRecurringRuleView: View {
             modelContext.insert(newRule)
         }
         try? modelContext.save()
+    }
+
+    private func toggleMonthDay(_ day: Int) {
+        if selectedMonthDays.contains(day) {
+            selectedMonthDays.remove(day)
+        } else {
+            selectedMonthDays.insert(day)
+        }
+    }
+
+    private func recurringDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = DateFormatterCache.locale(for: uiLanguageCode)
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 
