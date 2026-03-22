@@ -83,16 +83,20 @@ private struct AppBootstrapView: View {
         let normalizedEmailUserID = bootstrapEmailUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if (normalizedEmail.isEmpty || normalizedEmailUserID.isEmpty),
            let restoredSession = await EmailAuthManager.restoreSession() {
-            bootstrapEmailUserEmail = restoredSession.email
+            if !restoredSession.email.isEmpty {
+                bootstrapEmailUserEmail = restoredSession.email
+            }
             bootstrapEmailUserID = restoredSession.userID
-            bootstrapAuthMethod = "email"
-        } else if !normalizedEmail.isEmpty, bootstrapAuthMethod.isEmpty {
-            bootstrapAuthMethod = "email"
-        } else if !normalizedAppleID.isEmpty, bootstrapAuthMethod.isEmpty {
-            bootstrapAuthMethod = "apple"
+            bootstrapAuthMethod = restoredSession.authMethod.rawValue
+        } else if bootstrapAuthMethod.isEmpty {
+            if !normalizedAppleID.isEmpty {
+                bootstrapAuthMethod = "apple"
+            } else if !normalizedEmail.isEmpty {
+                bootstrapAuthMethod = "email"
+            }
         } else if bootstrapAuthMethod == "apple", normalizedAppleID.isEmpty, !normalizedEmail.isEmpty {
-            // Recover gracefully if method is stale but we still have a valid email session.
-            bootstrapAuthMethod = "email"
+            // Recover gracefully if Apple provider state was partially reset but the account session is still valid.
+            bootstrapAuthMethod = "apple"
         }
 
         await switchContainerIfNeeded(refreshEntitlements: true)

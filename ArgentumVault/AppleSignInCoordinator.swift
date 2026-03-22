@@ -1,5 +1,7 @@
 import Foundation
 import AuthenticationServices
+import CryptoKit
+import Security
 
 #if canImport(UIKit)
 import UIKit
@@ -9,16 +11,33 @@ import UIKit
 import AppKit
 #endif
 
+struct AppleSignInAuthorization {
+    let authorization: ASAuthorization
+    let rawNonce: String
+}
+
+private enum AppleSignInCoordinatorError: LocalizedError {
+    case missingNonce
+
+    var errorDescription: String? {
+        switch self {
+        case .missingNonce:
+            return "Apple sign in did not return a valid nonce."
+        }
+    }
+}
+
 @MainActor
 final class AppleSignInCoordinator: NSObject {
     private static var isAuthorizationInProgress = false
     private static var lastStartTimestamp: TimeInterval = 0
     private static let minimumStartInterval: TimeInterval = 1.2
 
-    private var completion: ((Result<ASAuthorization, Error>) -> Void)?
+    private var completion: ((Result<AppleSignInAuthorization, Error>) -> Void)?
     private var activeController: ASAuthorizationController?
+    private var currentNonce: String?
 
-    func start(completion: @escaping (Result<ASAuthorization, Error>) -> Void) {
+    func start(completion: @escaping (Result<AppleSignInAuthorization, Error>) -> Void) {
         let now = Date().timeIntervalSince1970
         guard !Self.isAuthorizationInProgress else { return }
         guard now - Self.lastStartTimestamp >= Self.minimumStartInterval else { return }
@@ -29,7 +48,10 @@ final class AppleSignInCoordinator: NSObject {
         self.completion = completion
 
         let request = ASAuthorizationAppleIDProvider().createRequest()
+        let rawNonce = Self.randomNonceString()
+        currentNonce = rawNonce
         request.requestedScopes = [.fullName, .email]
+        request.nonce = Self.sha256(rawNonce)
 
         let controller = ASAuthorizationController(authorizationRequests: [request])
         activeController = controller
@@ -44,16 +66,23 @@ final class AppleSignInCoordinator: NSObject {
 extension AppleSignInCoordinator: ASAuthorizationControllerDelegate {
     func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
         let handler = completion
+        let rawNonce = currentNonce
         completion = nil
         activeController = nil
+        currentNonce = nil
         Self.isAuthorizationInProgress = false
-        handler?(.success(authorization))
+        guard let rawNonce, !rawNonce.isEmpty else {
+            handler?(.failure(AppleSignInCoordinatorError.missingNonce))
+            return
+        }
+        handler?(.success(AppleSignInAuthorization(authorization: authorization, rawNonce: rawNonce)))
     }
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         let handler = completion
         completion = nil
         activeController = nil
+        currentNonce = nil
         Self.isAuthorizationInProgress = false
         handler?(.failure(error))
     }
@@ -92,5 +121,34 @@ extension AppleSignInCoordinator: ASAuthorizationControllerPresentationContextPr
 #else
         return ASPresentationAnchor()
 #endif
+    }
+}
+
+extension AppleSignInCoordinator {
+    static func sha256(_ input: String) -> String {
+        let digest = SHA256.hash(data: Data(input.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func randomNonceString(length: Int = 32) -> String {
+        precondition(length > 0)
+
+        let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        result.reserveCapacity(length)
+
+        while result.count < length {
+            var randomByte: UInt8 = 0
+            let status = SecRandomCopyBytes(kSecRandomDefault, 1, &randomByte)
+            guard status == errSecSuccess else {
+                continue
+            }
+
+            if randomByte < charset.count {
+                result.append(charset[Int(randomByte)])
+            }
+        }
+
+        return result
     }
 }

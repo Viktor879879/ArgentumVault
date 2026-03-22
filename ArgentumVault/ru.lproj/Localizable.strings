@@ -171,6 +171,7 @@
 "settings.account.error_failed" = "Не удалось выполнить вход через Apple. Проверьте capability Sign in with Apple и настройки Apple ID.";
 "settings.account.error_not_interactive" = "Сейчас недоступен интерактивный вход.";
 "settings.account.error_unknown" = "Не удалось обработать вход через Apple.";
+"settings.account.error_provider_unavailable" = "Авторизация через Apple пока не настроена для этого приложения.";
 "settings.account.error_email_invalid" = "Введите корректный email.";
 "settings.account.error_password_short" = "Пароль должен быть не короче 6 символов.";
 "settings.account.error_password_mismatch" = "Пароли не совпадают.";
@@ -278,6 +279,7 @@
 "settings.storage.mode.local" = "Режим хранилища: только локально (без облака)";
 "settings.storage.mode.local_fallback" = "Режим хранилища: локальный fallback (облако недоступно)";
 "settings.storage.error_prefix" = "Ошибка облачной синхронизации";
+"settings.storage.reason.account_required" = "Облачная синхронизация доступна только после входа в аккаунт приложения.";
 "settings.storage.reason.email_account_required" = "Облачная синхронизация доступна только после входа по Email.";
 "settings.storage.reason.no_icloud_account" = "Облачный бэкап недоступен: войдите в аккаунт приложения.";
 "settings.storage.reason.restricted" = "Облачный бэкап недоступен: доступ к облаку ограничен.";

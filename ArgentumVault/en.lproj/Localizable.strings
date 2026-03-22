@@ -171,6 +171,7 @@
 "settings.account.error_failed" = "Apple sign in failed. Check Sign in with Apple capability and Apple ID settings.";
 "settings.account.error_not_interactive" = "Interactive authorization is unavailable right now.";
 "settings.account.error_unknown" = "Could not process Apple sign in.";
+"settings.account.error_provider_unavailable" = "Apple sign in is not configured for this app yet.";
 "settings.account.error_email_invalid" = "Enter a valid email address.";
 "settings.account.error_password_short" = "Password must be at least 6 characters.";
 "settings.account.error_password_mismatch" = "Passwords do not match.";
@@ -278,6 +279,7 @@
 "settings.storage.mode.local" = "Storage mode: Local-only (no cloud sync)";
 "settings.storage.mode.local_fallback" = "Storage mode: Local fallback (cloud sync unavailable)";
 "settings.storage.error_prefix" = "Cloud sync error";
+"settings.storage.reason.account_required" = "Cloud sync requires sign in to your app account.";
 "settings.storage.reason.email_account_required" = "Cloud sync requires sign in with Email.";
 "settings.storage.reason.no_icloud_account" = "Cloud backup unavailable: sign in to your app account.";
 "settings.storage.reason.restricted" = "Cloud backup unavailable: cloud access is restricted.";

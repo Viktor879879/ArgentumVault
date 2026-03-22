@@ -146,6 +146,7 @@
 "settings.account.password" = "Losenord";
 "settings.account.confirm_password" = "Bekrafta losenord";
 "settings.account.error_email_invalid" = "Ange en giltig email.";
+"settings.account.error_provider_unavailable" = "Inloggning med Apple ar inte konfigurerad for den har appen annu.";
 "settings.account.error_password_short" = "Losenordet maste vara minst 6 tecken.";
 "settings.account.error_password_mismatch" = "Losenorden matchar inte.";
 "settings.account.error_email_exists" = "Email-konto finns redan pa den har enheten.";
@@ -176,6 +177,7 @@
 "settings.storage.mode.local" = "Lagringslage: endast lokalt (ingen molnsynk)";
 "settings.storage.mode.local_fallback" = "Lagringslage: lokal fallback (moln otillgangligt)";
 "settings.storage.error_prefix" = "Molnsynkfel";
+"settings.storage.reason.account_required" = "Molnsynk kraver inloggning i appkontot.";
 "settings.storage.reason.email_account_required" = "Molnsynk kraver inloggning med e-post.";
 "settings.storage.reason.no_icloud_account" = "Molnbackup ar inte tillganglig: logga in i appkontot.";
 "settings.storage.reason.restricted" = "Molnbackup ar inte tillganglig: molnatkomst ar begransad.";

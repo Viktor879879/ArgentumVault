@@ -146,6 +146,7 @@
 "settings.account.password" = "Пароль";
 "settings.account.confirm_password" = "Підтвердьте пароль";
 "settings.account.error_email_invalid" = "Введіть коректний email.";
+"settings.account.error_provider_unavailable" = "Вхід через Apple ще не налаштовано для цього застосунку.";
 "settings.account.error_password_short" = "Пароль має містити щонайменше 6 символів.";
 "settings.account.error_password_mismatch" = "Паролі не збігаються.";
 "settings.account.error_email_exists" = "Email-акаунт уже створено на цьому пристрої.";
@@ -176,6 +177,7 @@
 "settings.storage.mode.local" = "Режим сховища: лише локально (без хмари)";
 "settings.storage.mode.local_fallback" = "Режим сховища: локальний fallback (хмара недоступна)";
 "settings.storage.error_prefix" = "Помилка хмарної синхронізації";
+"settings.storage.reason.account_required" = "Хмарна синхронізація доступна лише після входу в акаунт застосунку.";
 "settings.storage.reason.email_account_required" = "Хмарна синхронізація доступна лише після входу через Email.";
 "settings.storage.reason.no_icloud_account" = "Хмарний бекап недоступний: увійдіть в акаунт застосунку.";
 "settings.storage.reason.restricted" = "Хмарний бекап недоступний: доступ до хмари обмежено.";
