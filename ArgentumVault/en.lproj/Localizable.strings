@@ -140,6 +140,11 @@
 "history.filter.type.all" = "All types";
 "history.filter.date" = "Date Filter";
 "history.filter.date.all" = "All dates";
+"history.filter.date.mode.all" = "All";
+"history.filter.date.mode.day" = "Day";
+"history.filter.date.mode.period" = "Period";
+"history.filter.date.start" = "From";
+"history.filter.date.end" = "To";
 "history.filter.date.last7" = "Last 7 days";
 "history.filter.date.last30" = "Last 30 days";
 "history.filter.date.month" = "This month";
@@ -189,8 +194,13 @@
 "recurring.frequency.daily" = "Daily";
 "recurring.frequency.weekly" = "Weekly";
 "recurring.frequency.monthly" = "Monthly";
+"recurring.frequency.monthly_selected_days" = "Selected month days";
 "recurring.interval" = "Every";
 "recurring.every" = "Every";
+"recurring.month_days.label" = "Days of month";
+"recurring.month_days.summary" = "Days:";
+"recurring.month_days.empty" = "Select at least one day.";
+"recurring.time" = "Time";
 "recurring.next_run" = "Next run";
 "recurring.note_prefix" = "Recurring";
 "settings.budgets" = "Budgets";
