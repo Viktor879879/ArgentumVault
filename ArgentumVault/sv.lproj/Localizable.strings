@@ -146,6 +146,7 @@
 "settings.account.password" = "Losenord";
 "settings.account.confirm_password" = "Bekrafta losenord";
 "settings.account.error_email_invalid" = "Ange en giltig email.";
+"settings.account.error_provider_unavailable" = "Inloggning med Apple ar inte konfigurerad for den har appen annu.";
 "settings.account.error_password_short" = "Losenordet maste vara minst 6 tecken.";
 "settings.account.error_password_mismatch" = "Losenorden matchar inte.";
 "settings.account.error_email_exists" = "Email-konto finns redan pa den har enheten.";

@@ -2,9 +2,15 @@ import Foundation
 import Supabase
 import Auth
 
-struct EmailAuthSession {
+enum AppAuthMethod: String, Sendable {
+    case apple
+    case email
+}
+
+struct AppAuthSession {
     let email: String
     let userID: String
+    let authMethod: AppAuthMethod
 }
 
 enum EmailAuthManager {
@@ -21,7 +27,7 @@ enum EmailAuthManager {
         email: String,
         password: String,
         confirmPassword: String
-    ) async throws -> EmailAuthSession {
+    ) async throws -> AppAuthSession {
         switch mode {
         case .signIn:
             return try await signIn(email: email, password: password)
@@ -30,7 +36,29 @@ enum EmailAuthManager {
         }
     }
 
-    static func restoreSession() async -> EmailAuthSession? {
+    static func authenticateWithApple(idToken: String, rawNonce: String) async throws -> AppAuthSession {
+        let normalizedToken = idToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedNonce = rawNonce.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedToken.isEmpty, !normalizedNonce.isEmpty else {
+            throw EmailAuthError.storageFailure
+        }
+
+        let client = try configuredClient()
+        let session = try await client.auth.signInWithIdToken(
+            credentials: OpenIDConnectCredentials(
+                provider: .apple,
+                idToken: normalizedToken,
+                nonce: normalizedNonce
+            )
+        )
+
+        guard let authSession = makeSession(from: session.user, fallbackAuthMethod: .apple) else {
+            throw EmailAuthError.storageFailure
+        }
+        return authSession
+    }
+
+    static func restoreSession() async -> AppAuthSession? {
         guard let client = try? configuredClient() else { return nil }
 
         if let currentUser = client.auth.currentUser,
@@ -49,7 +77,7 @@ enum EmailAuthManager {
         try? await client.auth.signOut(scope: .local)
     }
 
-    private static func signUp(email: String, password: String, confirmPassword: String) async throws -> EmailAuthSession {
+    private static func signUp(email: String, password: String, confirmPassword: String) async throws -> AppAuthSession {
         let normalizedEmail = try normalizedRequired(email: email)
         try validate(password: password)
         guard password == confirmPassword else {
@@ -75,7 +103,7 @@ enum EmailAuthManager {
         }
     }
 
-    private static func signIn(email: String, password: String) async throws -> EmailAuthSession {
+    private static func signIn(email: String, password: String) async throws -> AppAuthSession {
         let normalizedEmail = try normalizedRequired(email: email)
 
         let client = try configuredClient()
@@ -139,13 +167,53 @@ enum EmailAuthManager {
         return userID.uuidString.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    private static func makeSession(from user: User?) -> EmailAuthSession? {
+    private static func makeSession(
+        from user: User?,
+        fallbackAuthMethod: AppAuthMethod? = nil
+    ) -> AppAuthSession? {
         guard let user,
-              let normalizedEmail = normalized(email: user.email),
               let normalizedUserID = normalized(userID: user.id) else {
             return nil
         }
-        return EmailAuthSession(email: normalizedEmail, userID: normalizedUserID)
+
+        let resolvedAuthMethod = resolvedAuthMethod(from: user) ?? fallbackAuthMethod
+        guard let resolvedAuthMethod else {
+            return nil
+        }
+
+        let normalizedEmail = normalized(email: user.email) ?? ""
+        return AppAuthSession(
+            email: normalizedEmail,
+            userID: normalizedUserID,
+            authMethod: resolvedAuthMethod
+        )
+    }
+
+    private static func resolvedAuthMethod(from user: User) -> AppAuthMethod? {
+        if let provider = user.appMetadata["provider"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            switch provider {
+            case AppAuthMethod.apple.rawValue:
+                return .apple
+            case AppAuthMethod.email.rawValue:
+                return .email
+            default:
+                break
+            }
+        }
+
+        if let identities = user.identities {
+            if identities.contains(where: { $0.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == AppAuthMethod.apple.rawValue }) {
+                return .apple
+            }
+            if identities.contains(where: { $0.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == AppAuthMethod.email.rawValue }) {
+                return .email
+            }
+        }
+
+        if normalized(email: user.email) != nil {
+            return .email
+        }
+        return nil
     }
 
     private static func validate(password: String) throws {

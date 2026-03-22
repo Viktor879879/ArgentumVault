@@ -109,12 +109,12 @@ enum ICloudBackupManager {
     }
 
     private enum BackupSyncRouteError: LocalizedError {
-        case emailAccountRequired
+        case accountSessionRequired
 
         var errorDescription: String? {
             switch self {
-            case .emailAccountRequired:
-                return "Cloud sync requires email authentication."
+            case .accountSessionRequired:
+                return "Cloud sync requires an authenticated app account."
             }
         }
     }
@@ -472,7 +472,7 @@ enum ICloudBackupManager {
         accountIdentifier: String
     ) async throws {
         guard shouldUseSupabaseSync(for: accountIdentifier) else {
-            throw BackupSyncRouteError.emailAccountRequired
+            throw BackupSyncRouteError.accountSessionRequired
         }
 
         try await saveSnapshotPayloadToSupabase(
@@ -638,7 +638,9 @@ enum ICloudBackupManager {
     }
 
     private static func shouldUseSupabaseSync(for accountIdentifier: String) -> Bool {
-        accountIdentifier.hasPrefix("email:") || accountIdentifier.hasPrefix("email_uid:")
+        accountIdentifier.hasPrefix("apple:")
+            || accountIdentifier.hasPrefix("email:")
+            || accountIdentifier.hasPrefix("email_uid:")
     }
 
     private static func legacySupabaseBuckets(
@@ -804,8 +806,8 @@ enum ICloudBackupManager {
     nonisolated private static func reasonCode(for error: Error) -> String {
         if let routeError = error as? BackupSyncRouteError {
             switch routeError {
-            case .emailAccountRequired:
-                return "email_account_required"
+            case .accountSessionRequired:
+                return "account_required"
             }
         }
 
@@ -837,8 +839,8 @@ enum ICloudBackupManager {
             return "model_issue"
         }
         let message = String(describing: error).lowercased()
-        if message.contains("email authentication") {
-            return "email_account_required"
+        if message.contains("authenticated app account") || message.contains("email authentication") {
+            return "account_required"
         }
         if message.contains("permission") || message.contains("restricted") || message.contains("forbidden") {
             return "restricted"

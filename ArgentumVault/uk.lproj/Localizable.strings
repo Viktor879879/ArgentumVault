@@ -146,6 +146,7 @@
 "settings.account.password" = "Пароль";
 "settings.account.confirm_password" = "Підтвердьте пароль";
 "settings.account.error_email_invalid" = "Введіть коректний email.";
+"settings.account.error_provider_unavailable" = "Вхід через Apple ще не налаштовано для цього застосунку.";
 "settings.account.error_password_short" = "Пароль має містити щонайменше 6 символів.";
 "settings.account.error_password_mismatch" = "Паролі не збігаються.";
 "settings.account.error_email_exists" = "Email-акаунт уже створено на цьому пристрої.";
