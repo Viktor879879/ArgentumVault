@@ -1176,10 +1176,10 @@ struct HomeView: View {
         let transaction = Transaction(
             amount: rule.amount,
             currencyCode: wallet.assetCode,
-            date: date,
-            note: recurringNote(for: rule),
+            date: SecurityValidation.sanitizeDate(date),
+            note: SecurityValidation.sanitizeNote(recurringNote(for: rule) ?? ""),
             type: rule.type,
-            walletNameSnapshot: wallet.name,
+            walletNameSnapshot: SecurityValidation.sanitizeOptionalSnapshotLabel(wallet.name),
             walletKindRaw: wallet.kind.rawValue,
             walletColorHexSnapshot: wallet.colorHex,
             category: rule.category,
@@ -1198,11 +1198,11 @@ struct HomeView: View {
     }
 
     private func recurringNote(for rule: RecurringTransactionRule) -> String? {
-        let trimmed = rule.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty {
-            return "\(L10n.text("recurring.note_prefix", lang: uiLanguageCode)): \(rule.title)"
+        if let sanitized = SecurityValidation.sanitizeNote(rule.note ?? "") {
+            return sanitized
         }
-        return trimmed
+        let fallback = "\(L10n.text("recurring.note_prefix", lang: uiLanguageCode)): \(rule.title)"
+        return SecurityValidation.sanitizeNote(fallback)
     }
 
     private func nextRecurringDate(
@@ -2612,6 +2612,9 @@ enum DecimalFormatter {
     }
     
     static func parse(_ text: String) -> Decimal? {
+        guard SecurityValidation.isAllowedAmountInput(text) else {
+            return nil
+        }
         var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleaned.isEmpty { return nil }
 
@@ -2680,9 +2683,17 @@ enum AmountExpressionEvaluator {
     }
 
     static func evaluate(_ expression: String) -> Decimal? {
+        guard SecurityValidation.isAllowedAmountInput(expression) else {
+            return nil
+        }
         guard let tokens = tokenize(expression), !tokens.isEmpty else { return nil }
         guard let rpn = toReversePolishNotation(tokens) else { return nil }
-        return evaluateRPN(rpn)
+        guard let result = evaluateRPN(rpn) else { return nil }
+        let magnitude = result < 0 ? -result : result
+        guard SecurityValidation.sanitizeNonNegativeAmount(magnitude) != nil else {
+            return nil
+        }
+        return result
     }
 
     private static func tokenize(_ expression: String) -> [Token]? {
@@ -3245,8 +3256,12 @@ struct AddCategoryView: View {
         _customHexInput = State(initialValue: "#\(String(initialHex.prefix(6)))")
     }
     
+    private var sanitizedName: String? {
+        SecurityValidation.sanitizeCategoryName(name)
+    }
+
     private var isValid: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        sanitizedName != nil
     }
     
     var body: some View {
@@ -3254,6 +3269,12 @@ struct AddCategoryView: View {
             Form {
                 Section(L10n.text("common.name", lang: uiLanguageCode)) {
                     TextField(L10n.text("tag.name_placeholder", lang: uiLanguageCode), text: $name)
+                        .onChange(of: name) {
+                            name = SecurityValidation.boundedSingleLineInput(
+                                name,
+                                maxLength: SecurityValidation.maxCategoryNameLength
+                            )
+                        }
                 }
                 
                 Section(L10n.text("common.type", lang: uiLanguageCode)) {
@@ -3387,7 +3408,11 @@ struct AddCategoryView: View {
     }
     
     private func saveCategory() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed = sanitizedName else { return }
+        let safeColorHex = SecurityValidation.sanitizeColorHex(
+            colorHex,
+            fallback: category?.colorHex ?? "2F80EDFF"
+        )
         let sourceCode = CategoryLocalization.detectSourceLanguage(for: trimmed, fallbackLanguageCode: uiLanguageCode)
         let localizedNamesJSON = CategoryLocalization.encodeLocalizedNames([sourceCode: trimmed])
         let categoryForBackfill: Category
@@ -3401,7 +3426,7 @@ struct AddCategoryView: View {
                 category.localizedNamesJSON = localizedNamesJSON
             }
             category.type = type
-            category.colorHex = colorHex
+            category.colorHex = safeColorHex
             category.updatedAt = Date()
             categoryForBackfill = category
         } else {
@@ -3410,7 +3435,7 @@ struct AddCategoryView: View {
                 sourceLanguageCode: sourceCode,
                 localizedNamesJSON: localizedNamesJSON,
                 type: type,
-                colorHex: colorHex
+                colorHex: safeColorHex
             )
             modelContext.insert(newCategory)
             categoryForBackfill = newCategory
@@ -3507,6 +3532,7 @@ struct AddTransactionView: View {
     }
     
     private var canSave: Bool {
+        guard SecurityValidation.isDateInSupportedRange(date) else { return false }
         guard parsedAmount != nil, selectedWalletID != nil else { return false }
         if transactionType == .transfer {
             guard let targetID = selectedTransferWalletID, let sourceID = selectedWalletID else { return false }
@@ -3516,19 +3542,11 @@ struct AddTransactionView: View {
     }
     
     private var parsedAmount: Decimal? {
-        let amount = DecimalFormatter.parseOrEvaluate(amountText)
-        if let amount, amount > 0 {
-            return amount
-        }
-        return nil
+        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(amountText))
     }
     
     private var parsedTransferAmount: Decimal? {
-        let value = DecimalFormatter.parseOrEvaluate(transferAmountText)
-        if let value, value > 0 {
-            return value
-        }
-        return nil
+        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(transferAmountText))
     }
 
     private var calculatedAmountResult: Decimal? {
@@ -3582,6 +3600,7 @@ struct AddTransactionView: View {
                         TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $transferAmountText)
                             .keyboardType(.decimalPad)
                             .onChange(of: transferAmountText) {
+                                transferAmountText = SecurityValidation.boundedAmountInput(transferAmountText)
                                 isTransferAmountManuallyEdited = true
                             }
 
@@ -3626,6 +3645,9 @@ struct AddTransactionView: View {
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
                     TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
                         .keyboardType(.decimalPad)
+                        .onChange(of: amountText) {
+                            amountText = SecurityValidation.boundedAmountInput(amountText)
+                        }
 
                     if let calculatedAmountResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
@@ -3657,10 +3679,19 @@ struct AddTransactionView: View {
                 
                 Section(L10n.text("common.date", lang: uiLanguageCode)) {
                     DatePicker(L10n.text("common.date", lang: uiLanguageCode), selection: $date, displayedComponents: [.date, .hourAndMinute])
+                        .onChange(of: date) {
+                            date = SecurityValidation.sanitizeDate(date)
+                        }
                 }
                 
                 Section(L10n.text("common.comment", lang: uiLanguageCode)) {
                     TextField(L10n.text("transaction.add_comment", lang: uiLanguageCode), text: $note, axis: .vertical)
+                        .onChange(of: note) {
+                            note = SecurityValidation.boundedMultilineInput(
+                                note,
+                                maxLength: SecurityValidation.maxNoteLength
+                            )
+                        }
                 }
                 
                 Section(L10n.text("common.photo", lang: uiLanguageCode)) {
@@ -3750,6 +3781,17 @@ struct AddTransactionView: View {
         let transferWalletKindRaw = selectedTransferWallet?.kind.rawValue
         let transferWalletColorHexSnapshot = selectedTransferWallet?.colorHex
         let transferAmount = parsedTransferAmount
+        let safeDate = SecurityValidation.sanitizeDate(date)
+        let safeNote = SecurityValidation.sanitizeNote(note)
+        let safePhotoData = SecurityValidation.sanitizePhotoData(photoData)
+        let safeCurrencyCode =
+            SecurityValidation.sanitizeAssetCode(currencyCode)
+            ?? selectedWallet.flatMap { SecurityValidation.sanitizeAssetCode($0.assetCode) }
+            ?? SecurityValidation.sanitizeAssetCode(defaultCurrencyCode)
+            ?? "USD"
+        let safeWalletNameSnapshot = SecurityValidation.sanitizeOptionalSnapshotLabel(walletNameSnapshot)
+        let safeTransferWalletNameSnapshot = SecurityValidation.sanitizeOptionalSnapshotLabel(transferWalletNameSnapshot)
+        let safeTransferWalletCurrencyCode = transferWalletCurrencyCode.flatMap(SecurityValidation.sanitizeAssetCode)
         
         applyWalletChanges(
             newWallet: selectedWallet,
@@ -3761,16 +3803,16 @@ struct AddTransactionView: View {
         
         if let transaction {
             transaction.amount = amount
-            transaction.currencyCode = currencyCode
-            transaction.date = date
-            transaction.note = note.isEmpty ? nil : note
+            transaction.currencyCode = safeCurrencyCode
+            transaction.date = safeDate
+            transaction.note = safeNote
             transaction.type = transactionType
-            transaction.photoData = photoData
-            transaction.walletNameSnapshot = walletNameSnapshot
+            transaction.photoData = safePhotoData
+            transaction.walletNameSnapshot = safeWalletNameSnapshot
             transaction.walletKindRaw = walletKindRaw
             transaction.walletColorHexSnapshot = walletColorHexSnapshot
-            transaction.transferWalletNameSnapshot = transferWalletNameSnapshot
-            transaction.transferWalletCurrencyCode = transferWalletCurrencyCode
+            transaction.transferWalletNameSnapshot = safeTransferWalletNameSnapshot
+            transaction.transferWalletCurrencyCode = safeTransferWalletCurrencyCode
             transaction.transferWalletKindRaw = transferWalletKindRaw
             transaction.transferWalletColorHexSnapshot = transferWalletColorHexSnapshot
             transaction.transferAmount = transferAmount
@@ -3780,19 +3822,19 @@ struct AddTransactionView: View {
         } else {
             let newTransaction = Transaction(
                 amount: amount,
-                currencyCode: currencyCode,
-                date: date,
-                note: note.isEmpty ? nil : note,
+                currencyCode: safeCurrencyCode,
+                date: safeDate,
+                note: safeNote,
                 type: transactionType,
-                walletNameSnapshot: walletNameSnapshot,
+                walletNameSnapshot: safeWalletNameSnapshot,
                 walletKindRaw: walletKindRaw,
                 walletColorHexSnapshot: walletColorHexSnapshot,
-                transferWalletNameSnapshot: transferWalletNameSnapshot,
-                transferWalletCurrencyCode: transferWalletCurrencyCode,
+                transferWalletNameSnapshot: safeTransferWalletNameSnapshot,
+                transferWalletCurrencyCode: safeTransferWalletCurrencyCode,
                 transferWalletKindRaw: transferWalletKindRaw,
                 transferWalletColorHexSnapshot: transferWalletColorHexSnapshot,
                 transferAmount: transferAmount,
-                photoData: photoData,
+                photoData: safePhotoData,
                 category: selectedCategory,
                 wallet: selectedWallet,
                 transferWallet: selectedTransferWallet
@@ -3806,7 +3848,7 @@ struct AddTransactionView: View {
         guard let selectedPhotoItem else { return }
         if let data = try? await selectedPhotoItem.loadTransferable(type: Data.self) {
             await MainActor.run {
-                photoData = data
+                photoData = SecurityValidation.sanitizePhotoData(data)
             }
         }
     }
@@ -4025,19 +4067,20 @@ struct AddWalletView: View {
         _customHexInput = State(initialValue: "#\(String(initialHex.prefix(6)))")
     }
     
+    private var sanitizedName: String? {
+        SecurityValidation.sanitizeWalletName(name)
+    }
+
+    private var sanitizedAssetCode: String? {
+        SecurityValidation.sanitizeAssetCode(assetCode)
+    }
+
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && parsedBalance != nil
+        sanitizedName != nil && sanitizedAssetCode != nil && parsedBalance != nil
     }
     
     private var parsedBalance: Decimal? {
-        if balanceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return 0
-        }
-        let value = DecimalFormatter.parseOrEvaluate(balanceText)
-        if let value, value >= 0 {
-            return value
-        }
-        return nil
+        SecurityValidation.sanitizeNonNegativeAmount(DecimalFormatter.parseOrEvaluate(balanceText))
     }
 
     private var calculatedBalanceResult: Decimal? {
@@ -4051,6 +4094,12 @@ struct AddWalletView: View {
             Form {
                 Section(L10n.text("common.name", lang: uiLanguageCode)) {
                     TextField(L10n.text("wallet.name_placeholder", lang: uiLanguageCode), text: $name)
+                        .onChange(of: name) {
+                            name = SecurityValidation.boundedSingleLineInput(
+                                name,
+                                maxLength: SecurityValidation.maxWalletNameLength
+                            )
+                        }
                 }
                 
                 Section(L10n.text("common.type", lang: uiLanguageCode)) {
@@ -4067,6 +4116,13 @@ struct AddWalletView: View {
                     if kind == .stock {
                         TextField(L10n.text("wallet.ticker_placeholder", lang: uiLanguageCode), text: $assetCode)
                             .textInputAutocapitalization(.characters)
+                            .autocorrectionDisabled()
+                            .onChange(of: assetCode) {
+                                assetCode = SecurityValidation.boundedSingleLineInput(
+                                    assetCode.uppercased(),
+                                    maxLength: SecurityValidation.maxAssetCodeLength
+                                )
+                            }
                     } else {
                         Picker(L10n.text("wallet.asset", lang: uiLanguageCode), selection: $assetCode) {
                             ForEach(CurrencyCatalog.allCurrencies.filter { $0.kind == kind }, id: \.code) { item in
@@ -4081,6 +4137,9 @@ struct AddWalletView: View {
                 Section(L10n.text("wallet.balance", lang: uiLanguageCode)) {
                     TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $balanceText)
                         .keyboardType(.decimalPad)
+                        .onChange(of: balanceText) {
+                            balanceText = SecurityValidation.boundedAmountInput(balanceText)
+                        }
 
                     if let calculatedBalanceResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedBalanceResult, maximumFractionDigits: 6))")
@@ -4222,16 +4281,20 @@ struct AddWalletView: View {
     
     private func saveWallet() {
         guard let balance = parsedBalance else { return }
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedAsset = assetCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard let trimmedName = sanitizedName else { return }
+        guard let trimmedAsset = sanitizedAssetCode else { return }
         let selectedFolder = walletFolders.first { $0.persistentModelID == selectedFolderID }
+        let safeColorHex = SecurityValidation.sanitizeColorHex(
+            colorHex,
+            fallback: wallet?.colorHex ?? "FFFFFFFF"
+        )
         
         if let wallet {
             wallet.name = trimmedName
             wallet.kind = kind
             wallet.assetCode = trimmedAsset
             wallet.balance = balance
-            wallet.colorHex = colorHex
+            wallet.colorHex = safeColorHex
             wallet.folder = selectedFolder
             wallet.updatedAt = Date()
         } else {
@@ -4240,7 +4303,7 @@ struct AddWalletView: View {
                 assetCode: trimmedAsset,
                 kind: kind,
                 balance: balance,
-                colorHex: colorHex
+                colorHex: safeColorHex
             )
             newWallet.folder = selectedFolder
             modelContext.insert(newWallet)
@@ -4293,8 +4356,12 @@ struct AddWalletFolderView: View {
         _name = State(initialValue: folder?.name ?? "")
     }
     
+    private var sanitizedName: String? {
+        SecurityValidation.sanitizeFolderName(name)
+    }
+
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        sanitizedName != nil
     }
     
     var body: some View {
@@ -4302,6 +4369,12 @@ struct AddWalletFolderView: View {
             Form {
                 Section(L10n.text("common.name", lang: uiLanguageCode)) {
                     TextField(L10n.text("folder.name_placeholder", lang: uiLanguageCode), text: $name)
+                        .onChange(of: name) {
+                            name = SecurityValidation.boundedSingleLineInput(
+                                name,
+                                maxLength: SecurityValidation.maxFolderNameLength
+                            )
+                        }
                 }
             }
             .navigationTitle(folder == nil ? L10n.text("folder.new", lang: uiLanguageCode) : L10n.text("folder.edit", lang: uiLanguageCode))
@@ -4313,9 +4386,10 @@ struct AddWalletFolderView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L10n.text("common.save", lang: uiLanguageCode)) {
-                        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard let trimmed = sanitizedName else { return }
                         if let folder {
                             folder.name = trimmed
+                            folder.updatedAt = Date()
                         } else {
                             let folder = WalletFolder(name: trimmed)
                             modelContext.insert(folder)
@@ -5331,8 +5405,7 @@ struct AddRecurringRuleView: View {
     }
 
     private var parsedAmount: Decimal? {
-        guard let value = DecimalFormatter.parseOrEvaluate(amountText), value > 0 else { return nil }
-        return value
+        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(amountText))
     }
 
     private var calculatedAmountResult: Decimal? {
@@ -5383,14 +5456,11 @@ struct AddRecurringRuleView: View {
     }
 
     private var canSave: Bool {
+        guard SecurityValidation.isDateInSupportedRange(nextRunDate) else { return false }
         guard parsedAmount != nil else { return false }
         guard selectedWallet != nil else { return false }
         guard selectedCategoryID != nil else { return false }
-        if frequency == .monthlySelectedDays && normalizedSelectedMonthDays.isEmpty {
-            return false
-        }
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmedTitle.isEmpty
+        return SecurityValidation.sanitizeRecurringTitle(title) != nil
     }
 
     var body: some View {
@@ -5398,6 +5468,12 @@ struct AddRecurringRuleView: View {
             Form {
                 Section(L10n.text("common.name", lang: uiLanguageCode)) {
                     TextField(L10n.text("recurring.title_placeholder", lang: uiLanguageCode), text: $title)
+                        .onChange(of: title) {
+                            title = SecurityValidation.boundedSingleLineInput(
+                                title,
+                                maxLength: SecurityValidation.maxRecurringTitleLength
+                            )
+                        }
                 }
 
                 Section(L10n.text("common.type", lang: uiLanguageCode)) {
@@ -5431,6 +5507,9 @@ struct AddRecurringRuleView: View {
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
                     TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
                         .keyboardType(.decimalPad)
+                        .onChange(of: amountText) {
+                            amountText = SecurityValidation.boundedAmountInput(amountText)
+                        }
 
                     if let calculatedAmountResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
@@ -5476,34 +5555,24 @@ struct AddRecurringRuleView: View {
                                 .foregroundStyle(normalizedSelectedMonthDays.isEmpty ? .red : .secondary)
                         }
 
-                        DatePicker(
-                            L10n.text("recurring.time", lang: uiLanguageCode),
-                            selection: $nextRunDate,
-                            displayedComponents: [.hourAndMinute]
-                        )
-
-                        if let customMonthlyNextRunDate {
-                            Text("\(L10n.text("recurring.next_run", lang: uiLanguageCode)): \(recurringDateText(customMonthlyNextRunDate))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Stepper(
-                            "\(L10n.text("recurring.interval", lang: uiLanguageCode)): \(interval)",
-                            value: $interval,
-                            in: 1...365
-                        )
-
-                        DatePicker(
-                            L10n.text("recurring.next_run", lang: uiLanguageCode),
-                            selection: $nextRunDate,
-                            displayedComponents: [.date, .hourAndMinute]
-                        )
+                    DatePicker(
+                        L10n.text("recurring.next_run", lang: uiLanguageCode),
+                        selection: $nextRunDate,
+                        displayedComponents: [.date, .hourAndMinute]
+                    )
+                    .onChange(of: nextRunDate) {
+                        nextRunDate = SecurityValidation.sanitizeDate(nextRunDate)
                     }
                 }
 
                 Section(L10n.text("common.comment", lang: uiLanguageCode)) {
                     TextField(L10n.text("transaction.add_comment", lang: uiLanguageCode), text: $note, axis: .vertical)
+                        .onChange(of: note) {
+                            note = SecurityValidation.boundedMultilineInput(
+                                note,
+                                maxLength: SecurityValidation.maxNoteLength
+                            )
+                        }
                 }
 
                 Section {
@@ -5584,8 +5653,9 @@ struct AddRecurringRuleView: View {
         }()
         let resolvedInterval = frequency == .monthlySelectedDays ? 1 : max(1, interval)
 
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmedTitle = SecurityValidation.sanitizeRecurringTitle(title) else { return }
+        let trimmedNote = SecurityValidation.sanitizeNote(note)
+        let safeNextRunDate = SecurityValidation.sanitizeDate(nextRunDate)
 
         if let rule {
             rule.title = trimmedTitle
@@ -5593,10 +5663,9 @@ struct AddRecurringRuleView: View {
             rule.currencyCode = wallet.assetCode
             rule.type = type
             rule.frequency = frequency
-            rule.interval = resolvedInterval
-            rule.monthDays = resolvedMonthDays
-            rule.nextRunDate = resolvedNextRunDate
-            rule.note = trimmedNote.isEmpty ? nil : trimmedNote
+            rule.interval = max(1, interval)
+            rule.nextRunDate = safeNextRunDate
+            rule.note = trimmedNote
             rule.isActive = isActive
             rule.category = category
             rule.wallet = wallet
@@ -5608,10 +5677,9 @@ struct AddRecurringRuleView: View {
                 currencyCode: wallet.assetCode,
                 type: type,
                 frequency: frequency,
-                interval: resolvedInterval,
-                monthDaysCSV: RecurringTransactionRule.encodeMonthDays(resolvedMonthDays),
-                nextRunDate: resolvedNextRunDate,
-                note: trimmedNote.isEmpty ? nil : trimmedNote,
+                interval: max(1, interval),
+                nextRunDate: safeNextRunDate,
+                note: trimmedNote,
                 isActive: isActive,
                 category: category,
                 wallet: wallet
@@ -5796,6 +5864,9 @@ private struct EmailAuthSheetView: View {
                         .autocorrectionDisabled()
                         .keyboardType(.emailAddress)
                         .textContentType(.emailAddress)
+                        .onChange(of: email) {
+                            email = SecurityValidation.boundedSingleLineInput(email, maxLength: 254)
+                        }
                         .focused($focusedField, equals: .email)
                         .submitLabel(.next)
                         .onSubmit {
@@ -5808,6 +5879,9 @@ private struct EmailAuthSheetView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .textContentType(mode == .signUp ? .newPassword : .password)
+                        .onChange(of: password) {
+                            password = String(password.prefix(128))
+                        }
                         .focused($focusedField, equals: .password)
                         .submitLabel(mode == .signUp ? .next : .done)
                         .onSubmit {
@@ -5822,6 +5896,9 @@ private struct EmailAuthSheetView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .textContentType(.newPassword)
+                            .onChange(of: confirmPassword) {
+                                confirmPassword = String(confirmPassword.prefix(128))
+                            }
                             .focused($focusedField, equals: .confirmPassword)
                             .submitLabel(.done)
                             .onSubmit {

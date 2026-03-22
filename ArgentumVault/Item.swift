@@ -215,6 +215,7 @@ final class Wallet {
         assetCode: String,
         kind: AssetKind,
         balance: Decimal,
+
         colorHex: String? = "FFFFFFFF",
         deletedAt: Date? = nil,
         createdAt: Date = Date(),
@@ -225,6 +226,7 @@ final class Wallet {
         self.assetCode = assetCode
         self.kind = kind
         self.balance = balance
+
         self.colorHex = colorHex
         self.deletedAt = deletedAt
         self.createdAt = createdAt

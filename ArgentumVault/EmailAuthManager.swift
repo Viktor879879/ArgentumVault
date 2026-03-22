@@ -124,7 +124,11 @@ enum EmailAuthManager {
     private static func normalized(email: String?) -> String? {
         guard let email else { return nil }
         let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard normalized.contains("@"), normalized.contains("."), !normalized.isEmpty else {
+        guard normalized.contains("@"),
+              normalized.contains("."),
+              !normalized.isEmpty,
+              normalized.count <= 254
+        else {
             return nil
         }
         return normalized
@@ -147,6 +151,9 @@ enum EmailAuthManager {
     private static func validate(password: String) throws {
         guard password.count >= 6 else {
             throw EmailAuthError.passwordTooShort
+        }
+        guard password.count <= 128 else {
+            throw EmailAuthError.storageFailure
         }
     }
 
@@ -212,8 +219,13 @@ private enum SupabaseConfiguration {
             .replacingOccurrences(of: "\\/", with: "/")
         let trimmedKey = anonKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !trimmedURL.isEmpty, !trimmedKey.isEmpty,
-              let url = URL(string: trimmedURL)
+        guard !trimmedURL.isEmpty,
+              !trimmedKey.isEmpty,
+              SecurityValidation.isAllowedSupabaseClientKey(trimmedKey),
+              let url = URL(string: trimmedURL),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https",
+              url.host?.isEmpty == false
         else {
             throw EmailAuthError.storageFailure
         }
