@@ -14,7 +14,6 @@ struct FXRatesSnapshot: Codable {
 
 enum RateServiceError: Error {
     case invalidURL
-    case missingAPIKey
     case unexpectedResponse
 }
 
@@ -44,7 +43,6 @@ final class RateService: ObservableObject {
     private let erApi = ErApiProvider()
     private let metalsLive = MetalsLiveProvider()
     private let binance = BinanceProvider()
-    private let alphaVantage = AlphaVantageProvider()
     private let yahooFinance = YahooFinanceProvider()
     
     init() {
@@ -137,12 +135,7 @@ final class RateService: ObservableObject {
             }
             for symbol in stockSymbols {
                 group.addTask {
-                    if let price = try? await self.alphaVantage.latestAvailablePrice(symbol: symbol), price > 0 {
-                        await MainActor.run {
-                            self.stockUSDPrices[symbol] = price
-                            self.lastStockUpdate = Date()
-                        }
-                    } else if let yahooPrice = try? await self.yahooFinance.latestAvailablePrice(symbol: symbol), yahooPrice > 0 {
+                    if let yahooPrice = try? await self.yahooFinance.latestAvailablePrice(symbol: symbol), yahooPrice > 0 {
                         await MainActor.run {
                             self.stockUSDPrices[symbol] = yahooPrice
                             self.lastStockUpdate = Date()
@@ -330,7 +323,7 @@ final class RateService: ObservableObject {
     
     func stockQuote(symbol: String) async -> Double? {
         do {
-            return try await alphaVantage.globalQuotePrice(symbol: symbol)
+            return try await yahooFinance.latestAvailablePrice(symbol: symbol)
         } catch {
             return nil
         }
@@ -380,108 +373,6 @@ struct BinanceProvider {
     private struct BinanceTickerPrice: Decodable {
         let symbol: String
         let price: String
-    }
-}
-
-struct AlphaVantageProvider {
-    func latestAvailablePrice(symbol: String) async throws -> Double {
-        if let globalQuote = try? await globalQuotePrice(symbol: symbol), globalQuote > 0 {
-            return globalQuote
-        }
-        let dailyClose = try await latestDailyClose(symbol: symbol)
-        guard dailyClose > 0 else { throw RateServiceError.unexpectedResponse }
-        return dailyClose
-    }
-    
-    func globalQuotePrice(symbol: String) async throws -> Double {
-        let apiKey = try apiKey()
-        guard var components = URLComponents(string: "https://www.alphavantage.co/query") else {
-            throw RateServiceError.invalidURL
-        }
-        components.queryItems = [
-            URLQueryItem(name: "function", value: "GLOBAL_QUOTE"),
-            URLQueryItem(name: "symbol", value: symbol),
-            URLQueryItem(name: "apikey", value: apiKey)
-        ]
-        guard let url = components.url else { throw RateServiceError.invalidURL }
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let response = try JSONDecoder().decode(AlphaVantageGlobalQuoteResponse.self, from: data)
-        if let price = Double(response.globalQuote.price), price > 0 {
-            return price
-        }
-        if let previousClose = Double(response.globalQuote.previousClose), previousClose > 0 {
-            return previousClose
-        }
-        throw RateServiceError.unexpectedResponse
-    }
-    
-    func latestDailyClose(symbol: String) async throws -> Double {
-        let apiKey = try apiKey()
-        guard var components = URLComponents(string: "https://www.alphavantage.co/query") else {
-            throw RateServiceError.invalidURL
-        }
-        components.queryItems = [
-            URLQueryItem(name: "function", value: "TIME_SERIES_DAILY"),
-            URLQueryItem(name: "symbol", value: symbol),
-            URLQueryItem(name: "apikey", value: apiKey)
-        ]
-        guard let url = components.url else { throw RateServiceError.invalidURL }
-        let (data, _) = try await URLSession.shared.data(from: url)
-        let response = try JSONDecoder().decode(AlphaVantageDailyResponse.self, from: data)
-        
-        guard let latestDay = response.timeSeriesDaily.keys.max(),
-              let point = response.timeSeriesDaily[latestDay],
-              let close = Double(point.close) else {
-            throw RateServiceError.unexpectedResponse
-        }
-        
-        return close
-    }
-    
-    private func apiKey() throws -> String {
-        if let raw = Bundle.main.object(forInfoDictionaryKey: "ALPHA_VANTAGE_API_KEY") as? String {
-            let key = raw
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-            if !key.isEmpty {
-                return key
-            }
-        }
-        throw RateServiceError.missingAPIKey
-    }
-    
-    private struct AlphaVantageGlobalQuoteResponse: Decodable {
-        let globalQuote: AlphaVantageGlobalQuote
-        
-        private enum CodingKeys: String, CodingKey {
-            case globalQuote = "Global Quote"
-        }
-    }
-    
-    private struct AlphaVantageGlobalQuote: Decodable {
-        let price: String
-        let previousClose: String
-        
-        private enum CodingKeys: String, CodingKey {
-            case price = "05. price"
-            case previousClose = "08. previous close"
-        }
-    }
-    
-    private struct AlphaVantageDailyResponse: Decodable {
-        let timeSeriesDaily: [String: AlphaVantageDailyPoint]
-        
-        private enum CodingKeys: String, CodingKey {
-            case timeSeriesDaily = "Time Series (Daily)"
-        }
-    }
-    
-    private struct AlphaVantageDailyPoint: Decodable {
-        let close: String
-        
-        private enum CodingKeys: String, CodingKey {
-            case close = "4. close"
-        }
     }
 }
 
