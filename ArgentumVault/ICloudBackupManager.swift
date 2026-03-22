@@ -488,13 +488,29 @@ enum ICloudBackupManager {
         bucket: String
     ) async throws {
         let client = try EmailAuthManager.syncClient()
-        let ownerUserID = try await EmailAuthManager.currentSessionUserID()
+        guard !payload.isEmpty else {
+            throw NSError(
+                domain: "ArgentumVault.SupabaseBackup",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Refusing to upload an empty backup payload."]
+            )
+        }
+        guard let ownerUserID = SecurityValidation.sanitizeUUIDString(try await EmailAuthManager.currentSessionUserID()),
+              let safeBucket = SecurityValidation.sanitizeAccountBucket(bucket),
+              let safePayloadHash = SecurityValidation.sanitizeSHA256Hex(payloadHash)
+        else {
+            throw NSError(
+                domain: "ArgentumVault.SupabaseBackup",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "Supabase backup metadata failed local validation."]
+            )
+        }
         let updatedAt = iso8601Formatter.string(from: Date())
         let row = SupabaseSnapshotUpsertRow(
             owner_user_id: ownerUserID,
-            account_bucket: bucket,
+            account_bucket: safeBucket,
             payload_base64: payload.base64EncodedString(),
-            payload_hash: payloadHash,
+            payload_hash: safePayloadHash,
             schema_version: schemaVersion,
             updated_at: updatedAt
         )
@@ -525,7 +541,7 @@ enum ICloudBackupManager {
             .from(supabaseSnapshotsTable)
             .select("\(supabaseOwnerUserIDField),\(supabaseAccountBucketField)")
             .eq(supabaseOwnerUserIDField, value: ownerUserID)
-            .eq(supabaseAccountBucketField, value: bucket)
+            .eq(supabaseAccountBucketField, value: safeBucket)
             .limit(1)
             .execute()
 
@@ -539,7 +555,7 @@ enum ICloudBackupManager {
                 .from(supabaseSnapshotsTable)
                 .update(updateRow, returning: .minimal)
                 .eq(supabaseOwnerUserIDField, value: ownerUserID)
-                .eq(supabaseAccountBucketField, value: bucket)
+                .eq(supabaseAccountBucketField, value: safeBucket)
                 .execute()
         }
     }
@@ -570,14 +586,22 @@ enum ICloudBackupManager {
 
     private static func fetchSnapshotPayloadFromSupabase(bucket: String) async throws -> RemoteSnapshotPayload? {
         let client = try EmailAuthManager.syncClient()
-        let ownerUserID = try await EmailAuthManager.currentSessionUserID()
+        guard let ownerUserID = SecurityValidation.sanitizeUUIDString(try await EmailAuthManager.currentSessionUserID()),
+              let safeBucket = SecurityValidation.sanitizeAccountBucket(bucket)
+        else {
+            throw NSError(
+                domain: "ArgentumVault.SupabaseBackup",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Supabase backup query metadata failed local validation."]
+            )
+        }
         let response: PostgrestResponse<[SupabaseSnapshotSelectRow]> = try await client
             .from(supabaseSnapshotsTable)
             .select(
                 "\(supabaseOwnerUserIDField),\(supabaseAccountBucketField),\(supabasePayloadBase64Field),\(supabasePayloadHashField),\(supabaseSchemaVersionField),\(supabaseUpdatedAtField)"
             )
             .eq(supabaseOwnerUserIDField, value: ownerUserID)
-            .eq(supabaseAccountBucketField, value: bucket)
+            .eq(supabaseAccountBucketField, value: safeBucket)
             .limit(1)
             .execute()
 
@@ -585,11 +609,19 @@ enum ICloudBackupManager {
         guard let row = rows.first else {
             return nil
         }
+        if let returnedOwnerUserID = row.owner_user_id,
+           SecurityValidation.sanitizeUUIDString(returnedOwnerUserID) != ownerUserID {
+            throw NSError(
+                domain: "ArgentumVault.SupabaseBackup",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "Supabase returned a backup row for a different owner."]
+            )
+        }
 
         guard let payload = Data(base64Encoded: row.payload_base64) else {
             throw NSError(
                 domain: "ArgentumVault.SupabaseBackup",
-                code: 2,
+                code: 5,
                 userInfo: [NSLocalizedDescriptionKey: "Invalid backup payload encoding in Supabase."]
             )
         }
@@ -598,7 +630,7 @@ enum ICloudBackupManager {
 
         return RemoteSnapshotPayload(
             payload: payload,
-            payloadHash: row.payload_hash,
+            payloadHash: row.payload_hash.flatMap(SecurityValidation.sanitizeSHA256Hex),
             updatedAt: parseServerDate(row.updated_at),
             sourceDeviceID: snapshotMetadata?.sourceDeviceID,
             snapshotVersion: snapshotMetadata?.snapshotVersion
@@ -745,6 +777,28 @@ enum ICloudBackupManager {
 
     private static func currentSnapshotVersion(forBucket bucket: String) -> Int {
         max(0, UserDefaults.standard.integer(forKey: snapshotVersionDefaultsPrefix + bucket))
+    }
+
+    private static func sanitizedLanguageCode(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty, normalized.count <= 8 else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func defaultAssetCode(for kind: AssetKind) -> String {
+        switch kind {
+        case .fiat:
+            return "USD"
+        case .crypto:
+            return "BTC"
+        case .metal:
+            return "XAU"
+        case .stock:
+            return "AAPL"
+        }
     }
 
     nonisolated private static func reasonCode(for error: Error) -> String {
@@ -957,47 +1011,59 @@ enum ICloudBackupManager {
 
     private static func apply(snapshot: BackupSnapshot, to context: ModelContext) throws {
         var categoryByKey: [String: Category] = [:]
-        for record in snapshot.categories {
+        for (index, record) in snapshot.categories.enumerated() {
             let category = Category(
                 syncID: record.syncID ?? UUID().uuidString.lowercased(),
-                name: record.name,
-                sourceLanguageCode: record.sourceLanguageCode,
-                localizedNamesJSON: record.localizedNamesJSON,
+                name: SecurityValidation.sanitizeCategoryName(record.name) ?? "Category \(index + 1)",
+                sourceLanguageCode: sanitizedLanguageCode(record.sourceLanguageCode),
+                localizedNamesJSON: SecurityValidation.sanitizeLocalizedNamesJSON(record.localizedNamesJSON),
                 type: CategoryType(rawValue: record.typeRaw) ?? .expense,
-                colorHex: record.colorHex,
-                createdAt: record.createdAt,
-                updatedAt: record.updatedAt
+                colorHex: SecurityValidation.sanitizeColorHex(record.colorHex, fallback: "2F80EDFF"),
+                createdAt: SecurityValidation.sanitizeDate(record.createdAt),
+                updatedAt: SecurityValidation.sanitizeDate(record.updatedAt)
             )
             context.insert(category)
             categoryByKey[record.key] = category
         }
 
         var folderByKey: [String: WalletFolder] = [:]
-        for record in snapshot.walletFolders {
-            let folder = WalletFolder(name: record.name, createdAt: record.createdAt)
+        for (index, record) in snapshot.walletFolders.enumerated() {
+            let folder = WalletFolder(
+                name: SecurityValidation.sanitizeFolderName(record.name) ?? "Folder \(index + 1)",
+                createdAt: SecurityValidation.sanitizeDate(record.createdAt)
+            )
             context.insert(folder)
             folderByKey[record.key] = folder
         }
 
         for record in snapshot.assets {
+            guard let safeSymbol = SecurityValidation.sanitizeAssetCode(record.symbol),
+                  let safeName = SecurityValidation.sanitizeAssetName(record.name)
+            else {
+                continue
+            }
             let asset = Asset(
-                symbol: record.symbol,
-                name: record.name,
+                symbol: safeSymbol,
+                name: safeName,
                 kind: AssetKind(rawValue: record.kindRaw) ?? .fiat
             )
             context.insert(asset)
         }
 
         var walletByKey: [String: Wallet] = [:]
-        for record in snapshot.wallets {
+        for (index, record) in snapshot.wallets.enumerated() {
+            let resolvedKind = AssetKind(rawValue: record.kindRaw) ?? .fiat
+            guard let safeBalance = SecurityValidation.sanitizeNonNegativeAmount(record.balance) else {
+                continue
+            }
             let wallet = Wallet(
-                name: record.name,
-                assetCode: record.assetCode,
-                kind: AssetKind(rawValue: record.kindRaw) ?? .fiat,
-                balance: record.balance,
-                colorHex: record.colorHex,
-                createdAt: record.createdAt,
-                updatedAt: record.updatedAt
+                name: SecurityValidation.sanitizeWalletName(record.name) ?? "Wallet \(index + 1)",
+                assetCode: SecurityValidation.sanitizeAssetCode(record.assetCode) ?? defaultAssetCode(for: resolvedKind),
+                kind: resolvedKind,
+                balance: safeBalance,
+                colorHex: record.colorHex.map { SecurityValidation.sanitizeColorHex($0, fallback: "FFFFFFFF") },
+                createdAt: SecurityValidation.sanitizeDate(record.createdAt),
+                updatedAt: SecurityValidation.sanitizeDate(record.updatedAt)
             )
             if let folderKey = record.folderKey {
                 wallet.folder = folderByKey[folderKey]
@@ -1007,22 +1073,27 @@ enum ICloudBackupManager {
         }
 
         for record in snapshot.transactions {
+            guard let safeAmount = SecurityValidation.sanitizePositiveAmount(record.amount),
+                  let safeCurrencyCode = SecurityValidation.sanitizeAssetCode(record.currencyCode)
+            else {
+                continue
+            }
             let resolvedType = TransactionType(rawValue: record.typeRaw ?? "") ?? .expense
             let transaction = Transaction(
-                amount: record.amount,
-                currencyCode: record.currencyCode,
-                date: record.date,
-                note: record.note,
+                amount: safeAmount,
+                currencyCode: safeCurrencyCode,
+                date: SecurityValidation.sanitizeDate(record.date),
+                note: SecurityValidation.sanitizeNote(record.note ?? ""),
                 type: resolvedType,
-                walletNameSnapshot: record.walletNameSnapshot,
+                walletNameSnapshot: SecurityValidation.sanitizeOptionalSnapshotLabel(record.walletNameSnapshot),
                 walletKindRaw: record.walletKindRaw,
                 walletColorHexSnapshot: record.walletColorHexSnapshot,
-                transferWalletNameSnapshot: record.transferWalletNameSnapshot,
-                transferWalletCurrencyCode: record.transferWalletCurrencyCode,
+                transferWalletNameSnapshot: SecurityValidation.sanitizeOptionalSnapshotLabel(record.transferWalletNameSnapshot),
+                transferWalletCurrencyCode: record.transferWalletCurrencyCode.flatMap(SecurityValidation.sanitizeAssetCode),
                 transferWalletKindRaw: record.transferWalletKindRaw,
                 transferWalletColorHexSnapshot: record.transferWalletColorHexSnapshot,
-                transferAmount: record.transferAmount,
-                photoData: record.photoData,
+                transferAmount: SecurityValidation.sanitizePositiveAmount(record.transferAmount),
+                photoData: SecurityValidation.sanitizePhotoData(record.photoData),
                 category: record.categoryKey.flatMap { categoryByKey[$0] },
                 wallet: record.walletKey.flatMap { walletByKey[$0] },
                 transferWallet: record.transferWalletKey.flatMap { walletByKey[$0] }
@@ -1034,18 +1105,24 @@ enum ICloudBackupManager {
         }
 
         for record in snapshot.recurringRules {
+            guard let safeTitle = SecurityValidation.sanitizeRecurringTitle(record.title),
+                  let safeAmount = SecurityValidation.sanitizePositiveAmount(record.amount),
+                  let safeCurrencyCode = SecurityValidation.sanitizeAssetCode(record.currencyCode)
+            else {
+                continue
+            }
             let recurringRule = RecurringTransactionRule(
-                title: record.title,
-                amount: record.amount,
-                currencyCode: record.currencyCode,
+                title: safeTitle,
+                amount: safeAmount,
+                currencyCode: safeCurrencyCode,
                 type: TransactionType(rawValue: record.typeRaw) ?? .expense,
                 frequency: RecurrenceFrequency(rawValue: record.frequencyRaw) ?? .monthly,
                 interval: max(1, record.interval),
-                nextRunDate: record.nextRunDate,
-                note: record.note,
+                nextRunDate: SecurityValidation.sanitizeDate(record.nextRunDate),
+                note: SecurityValidation.sanitizeNote(record.note ?? ""),
                 isActive: record.isActive,
-                createdAt: record.createdAt,
-                updatedAt: record.updatedAt,
+                createdAt: SecurityValidation.sanitizeDate(record.createdAt),
+                updatedAt: SecurityValidation.sanitizeDate(record.updatedAt),
                 category: record.categoryKey.flatMap { categoryByKey[$0] },
                 wallet: record.walletKey.flatMap { walletByKey[$0] }
             )
@@ -1053,13 +1130,18 @@ enum ICloudBackupManager {
         }
 
         for record in snapshot.budgets {
+            guard let safeAmount = SecurityValidation.sanitizePositiveAmount(record.amount),
+                  let safeCurrencyCode = SecurityValidation.sanitizeAssetCode(record.currencyCode)
+            else {
+                continue
+            }
             let budget = CategoryBudget(
-                amount: record.amount,
-                currencyCode: record.currencyCode,
+                amount: safeAmount,
+                currencyCode: safeCurrencyCode,
                 period: BudgetPeriod(rawValue: record.periodRaw) ?? .monthly,
                 isActive: record.isActive,
-                createdAt: record.createdAt,
-                updatedAt: record.updatedAt,
+                createdAt: SecurityValidation.sanitizeDate(record.createdAt),
+                updatedAt: SecurityValidation.sanitizeDate(record.updatedAt),
                 category: record.categoryKey.flatMap { categoryByKey[$0] }
             )
             context.insert(budget)

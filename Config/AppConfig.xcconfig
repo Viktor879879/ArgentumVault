@@ -4,9 +4,6 @@
 SUPABASE_URL =
 SUPABASE_ANON_KEY =
 
-// Market data provider (empty by default; set in Secrets.xcconfig)
-ALPHA_VANTAGE_API_KEY =
-
 // Ads (public identifiers; safe to keep in shared config)
 GAD_APPLICATION_IDENTIFIER = ca-app-pub-3581580891903061~6502530134
 GAD_BANNER_AD_UNIT_ID = ca-app-pub-3581580891903061/4916219360
