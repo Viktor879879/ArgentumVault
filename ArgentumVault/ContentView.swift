@@ -4017,7 +4017,7 @@ struct AddWalletView: View {
         _name = State(initialValue: wallet?.name ?? "")
         _kind = State(initialValue: wallet?.kind ?? .fiat)
         _assetCode = State(initialValue: wallet?.assetCode ?? defaultCurrencyCode)
-        _balanceText = State(initialValue: wallet.map { DecimalFormatter.editingString(from: $0.balance) } ?? "")
+        _balanceText = State(initialValue: wallet.map { DecimalFormatter.editingString(from: $0.balance) } ?? "0")
         let initialHex = wallet?.colorHex ?? "FFFFFFFF"
         _colorHex = State(initialValue: initialHex)
         _selectedFolderID = State(initialValue: wallet?.folder?.persistentModelID)
@@ -4030,6 +4030,9 @@ struct AddWalletView: View {
     }
     
     private var parsedBalance: Decimal? {
+        if balanceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return 0
+        }
         let value = DecimalFormatter.parseOrEvaluate(balanceText)
         if let value, value >= 0 {
             return value
