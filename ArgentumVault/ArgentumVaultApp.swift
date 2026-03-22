@@ -37,6 +37,7 @@ private struct AppBootstrapView: View {
     @State private var containerEpoch = 0
     @State private var lastKnownAccountIdentifier: String?
     @State private var activeStoreAccountIdentifier: String?
+    @State private var backupPipelineSignature: String?
 
     var body: some View {
         Group {
@@ -318,16 +319,33 @@ private struct AppBootstrapView: View {
         usesCloudKit: Bool,
         container: ModelContainer
     ) {
+        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
+            startupBackupTask?.cancel()
+            startupBackupTask = nil
+            periodicBackupTask?.cancel()
+            periodicBackupTask = nil
+            lastKnownAccountIdentifier = nil
+            backupPipelineSignature = nil
+            return
+        }
+        lastKnownAccountIdentifier = accountIdentifier
+
+        let pipelineSignature = makeBackupPipelineSignature(
+            requestedCloud: requestedCloud,
+            usesCloudKit: usesCloudKit,
+            container: container,
+            accountIdentifier: accountIdentifier
+        )
+
+        if backupPipelineSignature == pipelineSignature {
+            return
+        }
+
         startupBackupTask?.cancel()
         startupBackupTask = nil
         periodicBackupTask?.cancel()
         periodicBackupTask = nil
-
-        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
-            lastKnownAccountIdentifier = nil
-            return
-        }
-        lastKnownAccountIdentifier = accountIdentifier
+        backupPipelineSignature = pipelineSignature
 
         startupBackupTask = Task { @MainActor [container] in
             let startupDelay: UInt64 = usesCloudKit ? 10_000_000_000 : 350_000_000
@@ -432,43 +450,6 @@ private struct AppBootstrapView: View {
                         accountIdentifier: latestAccountIdentifier,
                         force: false
                     )
-                    continue
-                }
-
-                // Full snapshot restore invalidates live SwiftData objects.
-                // Avoid destructive pull-sync passes while the app is actively rendering UI.
-                // Foreground sessions still upload automatically; remote restore runs on cold start,
-                // manual restore, and the next non-active lifecycle transition.
-                if scenePhase == .active {
-                    continue
-                }
-
-                let syncContext = ModelContext(container)
-                let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                    modelContext: syncContext,
-                    accountIdentifier: latestAccountIdentifier
-                )) ?? false
-                guard !Task.isCancelled else { break }
-                guard isBackupPipelineContextCurrent(
-                    container: container,
-                    accountIdentifier: latestAccountIdentifier
-                ) else {
-                    continue
-                }
-                if didRestore {
-                    refreshViewTreeAfterRestore()
-                    continue
-                }
-                let backupContext = ModelContext(container)
-                if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
-                    modelContext: backupContext,
-                    didRestore: didRestore
-                ) {
-                    ICloudBackupManager.backupIfNeeded(
-                        modelContext: backupContext,
-                        accountIdentifier: latestAccountIdentifier,
-                        force: didRestore
-                    )
                 }
             }
         }
@@ -551,6 +532,16 @@ private struct AppBootstrapView: View {
         guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
         guard StorageModePolicy.currentCloudBackupAccountIdentifier() == accountIdentifier else { return false }
         return true
+    }
+
+    private func makeBackupPipelineSignature(
+        requestedCloud: Bool,
+        usesCloudKit: Bool,
+        container: ModelContainer,
+        accountIdentifier: String
+    ) -> String {
+        let containerID = ObjectIdentifier(container)
+        return "\(requestedCloud)|\(usesCloudKit)|\(containerID)|\(accountIdentifier)"
     }
 
     @MainActor
