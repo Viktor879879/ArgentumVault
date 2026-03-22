@@ -140,6 +140,11 @@
 "history.filter.type.all" = "Все типы";
 "history.filter.date" = "Фильтр по дате";
 "history.filter.date.all" = "Все даты";
+"history.filter.date.mode.all" = "Все";
+"history.filter.date.mode.day" = "День";
+"history.filter.date.mode.period" = "Период";
+"history.filter.date.start" = "С";
+"history.filter.date.end" = "По";
 "history.filter.date.last7" = "Последние 7 дней";
 "history.filter.date.last30" = "Последние 30 дней";
 "history.filter.date.month" = "Этот месяц";
@@ -190,8 +195,13 @@
 "recurring.frequency.daily" = "Ежедневно";
 "recurring.frequency.weekly" = "Еженедельно";
 "recurring.frequency.monthly" = "Ежемесячно";
+"recurring.frequency.monthly_selected_days" = "Выбранные дни месяца";
 "recurring.interval" = "Каждые";
 "recurring.every" = "Каждые";
+"recurring.month_days.label" = "Дни месяца";
+"recurring.month_days.summary" = "Дни:";
+"recurring.month_days.empty" = "Выберите хотя бы один день.";
+"recurring.time" = "Время";
 "recurring.next_run" = "Следующий запуск";
 "recurring.note_prefix" = "Регулярная";
 "settings.budgets" = "Бюджеты";

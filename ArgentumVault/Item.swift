@@ -30,6 +30,7 @@ enum RecurrenceFrequency: String, Codable, CaseIterable {
     case daily
     case weekly
     case monthly
+    case monthlySelectedDays
 }
 
 enum BudgetPeriod: String, Codable, CaseIterable {
@@ -268,6 +269,7 @@ final class RecurringTransactionRule {
     var type: TransactionType = TransactionType.expense
     var frequency: RecurrenceFrequency = RecurrenceFrequency.monthly
     var interval: Int = 1
+    var monthDaysCSV: String?
     var nextRunDate: Date = Date()
     var note: String?
     var isActive: Bool = true
@@ -287,6 +289,7 @@ final class RecurringTransactionRule {
         type: TransactionType,
         frequency: RecurrenceFrequency,
         interval: Int = 1,
+        monthDaysCSV: String? = nil,
         nextRunDate: Date = Date(),
         note: String? = nil,
         isActive: Bool = true,
@@ -303,6 +306,7 @@ final class RecurringTransactionRule {
         self.type = type
         self.frequency = frequency
         self.interval = max(1, interval)
+        self.monthDaysCSV = monthDaysCSV
         self.nextRunDate = nextRunDate
         self.note = note
         self.isActive = isActive
@@ -311,6 +315,31 @@ final class RecurringTransactionRule {
         self.updatedAt = updatedAt
         self.category = category
         self.wallet = wallet
+    }
+}
+
+extension RecurringTransactionRule {
+    static func normalizeMonthDays(_ days: [Int]) -> [Int] {
+        Array(Set(days.map { min(31, max(1, $0)) })).sorted()
+    }
+
+    static func encodeMonthDays(_ days: [Int]) -> String? {
+        let normalized = normalizeMonthDays(days)
+        guard !normalized.isEmpty else { return nil }
+        return normalized.map(String.init).joined(separator: ",")
+    }
+
+    static func decodeMonthDays(_ csv: String?) -> [Int] {
+        guard let csv else { return [] }
+        let parsed = csv
+            .split(separator: ",")
+            .compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        return normalizeMonthDays(parsed)
+    }
+
+    var monthDays: [Int] {
+        get { Self.decodeMonthDays(monthDaysCSV) }
+        set { monthDaysCSV = Self.encodeMonthDays(newValue) }
     }
 }
 
