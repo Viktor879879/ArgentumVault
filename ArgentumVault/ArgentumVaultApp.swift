@@ -135,6 +135,14 @@ private struct AppBootstrapView: View {
             bootstrapAuthMethod = "apple"
         }
 
+        AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: bootstrapAuthMethod,
+            appleUserID: bootstrapAppleUserID,
+            emailUserEmail: bootstrapEmailUserEmail,
+            emailUserID: bootstrapEmailUserID,
+            reason: "bootstrapIfNeeded.syncCurrentAccount"
+        )
+
         await switchContainerIfNeeded(refreshEntitlements: true, reason: "bootstrap.initial")
         guard modelContainer == nil else {
             AppFlowDiagnostics.launch("bootstrapIfNeeded end resolved existing container")
@@ -397,7 +405,7 @@ private struct AppBootstrapView: View {
         container: ModelContainer
     ) {
         AppFlowDiagnostics.sync(
-            "configureICloudBackupPipeline requestedCloud=\(requestedCloud) usesCloudKit=\(usesCloudKit) accountIdentifier=\(StorageModePolicy.currentCloudBackupAccountIdentifier() ?? "nil")"
+            "configureICloudBackupPipeline requestedCloud=\(requestedCloud) usesCloudKit=\(usesCloudKit) accountIdentifier=\(StorageModePolicy.currentCloudBackupAccountIdentifier() ?? "nil") runtimeAutoRestore=false"
         )
         startupBackupTask?.cancel()
         startupBackupTask = nil
@@ -431,10 +439,19 @@ private struct AppBootstrapView: View {
             }
 
             let restoreContext = ModelContext(container)
-            let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                modelContext: restoreContext,
-                accountIdentifier: accountIdentifier
-            )) ?? false
+            let hasLocalData = ICloudBackupManager.hasCoreFinancialData(in: restoreContext)
+            let didRestore: Bool
+            if hasLocalData {
+                didRestore = false
+                AppFlowDiagnostics.sync(
+                    "startup backup task skipped restore because local data already exists accountIdentifier=\(accountIdentifier)"
+                )
+            } else {
+                didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
+                    modelContext: restoreContext,
+                    accountIdentifier: accountIdentifier
+                )) ?? false
+            }
 
             guard !Task.isCancelled else { return }
             guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
@@ -483,36 +500,6 @@ private struct AppBootstrapView: View {
                         force: false
                     )
                     continue
-                }
-                let syncContext = ModelContext(container)
-                let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                    modelContext: syncContext,
-                    accountIdentifier: latestAccountIdentifier
-                )) ?? false
-                guard !Task.isCancelled else { break }
-                guard isBackupPipelineContextCurrent(
-                    container: container,
-                    accountIdentifier: latestAccountIdentifier
-                ) else {
-                    continue
-                }
-                if didRestore {
-                    AppFlowDiagnostics.sync(
-                        "periodic sync restored remote snapshot accountIdentifier=\(latestAccountIdentifier); runtime restore stays in-place"
-                    )
-                    continue
-                }
-                let backupContext = ModelContext(container)
-                if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
-                    modelContext: backupContext,
-                    didRestore: didRestore
-                ) {
-                    AppFlowDiagnostics.sync("periodic sync forcing backup after restore attempt accountIdentifier=\(latestAccountIdentifier)")
-                    ICloudBackupManager.backupIfNeeded(
-                        modelContext: backupContext,
-                        accountIdentifier: latestAccountIdentifier,
-                        force: didRestore
-                    )
                 }
             }
         }
@@ -1080,53 +1067,12 @@ private enum AppStorageDiagnostics {
 }
 
 private enum StorageModePolicy {
-    private static let appleUserIDKey = "appleUserID"
-    private static let emailUserEmailKey = "emailUserEmail"
-    private static let emailUserIDKey = "emailUserID"
-    private static let authMethodKey = "authMethod"
-
     static func currentCloudBackupAccountIdentifier() -> String? {
-        currentAppleAccountIdentifier() ?? currentEmailCloudBackupIdentifier()
-    }
-
-    static func currentAppleAccountIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let appleUserID = defaults.string(forKey: appleUserIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !appleUserID.isEmpty else { return nil }
-        return "apple:\(appleUserID)"
-    }
-
-    static func currentEmailAccountIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let emailUserID = defaults.string(forKey: emailUserIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if !emailUserID.isEmpty {
-            return "email_uid:\(emailUserID)"
-        }
-        let emailUserEmail = defaults.string(forKey: emailUserEmailKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if !emailUserEmail.isEmpty {
-            return "email:\(emailUserEmail)"
-        }
-        return nil
-    }
-
-    private static func currentEmailCloudBackupIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let emailUserID = defaults.string(forKey: emailUserIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if !emailUserID.isEmpty {
-            return "email_uid:\(emailUserID)"
-        }
-        return currentEmailAccountIdentifier()
+        AccountIdentityPolicy.currentCloudBackupAccountIdentifier()
     }
 
     static func currentAccountIdentifier() -> String? {
-        currentAppleAccountIdentifier() ?? currentEmailAccountIdentifier()
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {

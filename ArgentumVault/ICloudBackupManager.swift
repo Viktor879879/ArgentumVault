@@ -165,7 +165,7 @@ enum ICloudBackupManager {
             encoder.dateEncodingStrategy = .iso8601
             let payload = try encoder.encode(snapshot)
 
-            let payloadHash = hashHex(data: payload)
+            let payloadHash = try snapshotContentHash(snapshot)
             let lastHashKey = lastHashDefaultsPrefix + bucket
             let lastCloudHashKey = lastCloudHashDefaultsPrefix + bucket
             let localHashMatches = defaults.string(forKey: lastHashKey) == payloadHash
@@ -350,8 +350,9 @@ enum ICloudBackupManager {
         let lastHashKey = lastHashDefaultsPrefix + bucket
         let lastCloudHashKey = lastCloudHashDefaultsPrefix + bucket
         let defaults = UserDefaults.standard
-        defaults.set(hashHex(data: payload), forKey: lastHashKey)
-        defaults.set(hashHex(data: payload), forKey: lastCloudHashKey)
+        let payloadHash = try snapshotContentHash(snapshot)
+        defaults.set(payloadHash, forKey: lastHashKey)
+        defaults.set(payloadHash, forKey: lastCloudHashKey)
         defaults.set(Date().timeIntervalSince1970, forKey: lastSuccessDefaultsPrefix + bucket)
         defaults.set((remoteUpdatedAt ?? Date()).timeIntervalSince1970, forKey: lastCloudSuccessDefaultsPrefix + bucket)
         defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
@@ -734,9 +735,9 @@ enum ICloudBackupManager {
             return true
         }
 
-        if let localPayload = try? encodeSnapshotPayload(from: modelContext, bucket: bucket),
-           let remoteHash = remoteSnapshot.payloadHash {
-            let localHash = hashHex(data: localPayload)
+        if let localSnapshot = try? makeSnapshot(from: modelContext, bucket: bucket),
+           let remoteHash = remoteSnapshot.payloadHash,
+           let localHash = try? snapshotContentHash(localSnapshot) {
             if localHash == remoteHash {
                 return true
             }
@@ -1043,6 +1044,19 @@ enum ICloudBackupManager {
         )
     }
 
+    private static func snapshotContentHash(_ snapshot: BackupSnapshot) throws -> String {
+        var normalizedSnapshot = snapshot
+        normalizedSnapshot.exportedAt = Date(timeIntervalSince1970: 0)
+        normalizedSnapshot.sourceDeviceID = nil
+        normalizedSnapshot.snapshotVersion = nil
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .iso8601
+        let payload = try encoder.encode(normalizedSnapshot)
+        return hashHex(data: payload)
+    }
+
     private static func apply(snapshot: BackupSnapshot, to context: ModelContext) throws {
         var categoryByKey: [String: Category] = [:]
         for (index, record) in snapshot.categories.enumerated() {
@@ -1289,9 +1303,9 @@ enum ICloudBackupManager {
 
 private struct BackupSnapshot: Codable {
     let schemaVersion: Int
-    let exportedAt: Date
-    let sourceDeviceID: String?
-    let snapshotVersion: Int?
+    var exportedAt: Date
+    var sourceDeviceID: String?
+    var snapshotVersion: Int?
     let categories: [CategoryRecord]
     let walletFolders: [WalletFolderRecord]
     let wallets: [WalletRecord]

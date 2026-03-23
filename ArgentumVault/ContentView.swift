@@ -82,6 +82,7 @@ struct ContentView: View {
     @AppStorage("forceShowOnboardingOnce_v4") private var forceShowOnboardingOnce = true
     @AppStorage("didRunMigration_v1") private var didRunMigration = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -111,7 +112,7 @@ struct ContentView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var rootContentState: RootContentState {
@@ -180,6 +181,7 @@ struct ContentView: View {
         .task {
 #if DEBUG
             if debugResetFirstLaunchOnce {
+                activeAccountIdentifier = ""
                 didCompleteInitialSetup = false
                 didShowOnboarding = false
                 forceShowOnboardingOnce = true
@@ -192,6 +194,7 @@ struct ContentView: View {
                 emailUserEmail = ""
                 emailUserID = ""
                 authMethod = ""
+                AccountIdentityPolicy.clearPersistedAccountIdentifier(reason: "ContentView.debugResetFirstLaunchOnce")
                 debugResetFirstLaunchOnce = false
             }
 #endif
@@ -208,6 +211,13 @@ struct ContentView: View {
                     authMethod = "apple"
                 }
             }
+            activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+                authMethod: authMethod,
+                appleUserID: appleUserID,
+                emailUserEmail: emailUserEmail,
+                emailUserID: emailUserID,
+                reason: "ContentView.task.syncCurrentAccount"
+            ) ?? ""
             if appCountryCode.isEmpty {
                 appCountryCode = CountryCatalog.defaultCountryCode()
             }
@@ -272,6 +282,9 @@ struct ContentView: View {
         }
         .onChange(of: rootContentState) { _, newValue in
             AppFlowDiagnostics.launch("ContentView root state changed state=\(newValue.rawValue)")
+        }
+        .onChange(of: activeAccountIdentifier) { _, newValue in
+            AppFlowDiagnostics.launch("ContentView active account identifier changed value=\(newValue)")
         }
         .onChange(of: selectedRootTab) { _, newValue in
             AppFlowDiagnostics.launch("Root tab changed tab=\(String(describing: newValue))")
@@ -372,6 +385,7 @@ struct FirstLaunchSetupView: View {
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
     @AppStorage("appCountryCode") private var appCountryCode = ""
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -414,7 +428,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -638,6 +652,13 @@ struct FirstLaunchSetupView: View {
             "FirstLaunchSetupView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
         )
         isAppleAuthInProgress = false
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: credential.user,
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "FirstLaunchSetupView.applyAppleAccountSession"
+        ) ?? ""
         appleUserID = credential.user
         emailUserID = session.userID
         emailUserEmail = session.email
@@ -673,6 +694,13 @@ struct FirstLaunchSetupView: View {
         AppFlowDiagnostics.launch(
             "FirstLaunchSetupView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
         )
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: "",
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "FirstLaunchSetupView.handleEmailAuthSuccess"
+        ) ?? ""
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -755,18 +783,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {
@@ -4335,6 +4352,7 @@ struct SettingsView: View {
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("appTheme") private var appTheme = "system"
     @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -4402,7 +4420,7 @@ struct SettingsView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
     var body: some View {
@@ -4962,6 +4980,13 @@ struct SettingsView: View {
             "SettingsView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
         )
         isAppleAuthInProgress = false
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: credential.user,
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "SettingsView.applyAppleAccountSession"
+        ) ?? ""
         appleUserID = credential.user
         emailUserID = session.userID
         emailUserEmail = session.email
@@ -5015,6 +5040,8 @@ struct SettingsView: View {
 
     private func clearAccountSession() {
         AppFlowDiagnostics.launch("SettingsView clearAccountSession")
+        activeAccountIdentifier = ""
+        AccountIdentityPolicy.clearPersistedAccountIdentifier(reason: "SettingsView.clearAccountSession")
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -5037,6 +5064,13 @@ struct SettingsView: View {
         AppFlowDiagnostics.launch(
             "SettingsView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
         )
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: "",
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "SettingsView.handleEmailAuthSuccess"
+        ) ?? ""
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -5059,18 +5093,7 @@ struct SettingsView: View {
 
 #if DEBUG
     private var currentBackupAccountIdentifier: String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountIdentityPolicy.currentCloudBackupAccountIdentifier()
     }
 
     private func refreshCloudDebugStatus() {
@@ -5192,18 +5215,7 @@ struct SettingsView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {
