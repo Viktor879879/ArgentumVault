@@ -24,6 +24,7 @@ private struct AppBootstrapView: View {
     @AppStorage("emailUserEmail") private var bootstrapEmailUserEmail = ""
     @AppStorage("emailUserID") private var bootstrapEmailUserID = ""
     @AppStorage("authMethod") private var bootstrapAuthMethod = ""
+    @StateObject private var quickExpenseRouter = QuickExpenseRouter()
     @State private var modelContainer: ModelContainer?
     @State private var isCloudStoreEnabled = false
     @State private var isReconfiguringContainer = false
@@ -47,6 +48,9 @@ private struct AppBootstrapView: View {
             } else {
                 LoadingBootstrapView()
             }
+        }
+        .onOpenURL { url in
+            quickExpenseRouter.handle(url: url)
         }
         .task {
             await bootstrapIfNeeded()
@@ -72,6 +76,7 @@ private struct AppBootstrapView: View {
             perform: handleModelStoreRestoreDidFinishNotification
         )
         .onChange(of: scenePhase, perform: handleScenePhaseChange)
+        .environmentObject(quickExpenseRouter)
     }
 
     @MainActor

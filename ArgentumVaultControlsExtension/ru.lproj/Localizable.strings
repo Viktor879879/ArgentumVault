@@ -1,0 +1,3 @@
+"control.new_expense.title" = "Новая трата";
+"control.new_expense.description" = "Открывает Argentum Vault сразу на экране быстрого добавления расхода.";
+"control.new_expense.intent_title" = "Открыть быстрый расход";

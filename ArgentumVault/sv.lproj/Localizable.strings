@@ -64,6 +64,14 @@
 "transaction.add_comment" = "Lägg till kommentar";
 "transaction.select_photo" = "Välj foto";
 "transaction.untagged" = "Otaggad";
+"quick_expense.title" = "Ny utgift";
+"quick_expense.recent_categories" = "Senaste kategorier";
+"quick_expense.note_optional" = "Anteckning (valfritt)";
+"quick_expense.no_wallets" = "Skapa forst en planbok for att lagga till en utgift.";
+"quick_expense.no_categories" = "Skapa forst en utgiftskategori.";
+"quick_expense.amount_invalid" = "Ange ett giltigt belopp storre an 0.";
+"quick_expense.save_failed_title" = "Det gick inte att spara utgiften";
+"quick_expense.save_failed" = "Utgiften kunde inte sparas just nu. Forsok igen.";
 "wallet.new" = "Ny plånbok";
 "wallet.edit" = "Redigera plånbok";
 "wallet.name_placeholder" = "Plånboksnamn";
@@ -84,6 +92,12 @@
 "a11y.add_total_currency" = "Lägg till totalvaluta";
 "a11y.add_folder" = "Lägg till mapp";
 "a11y.add_wallet" = "Lägg till plånbok";
+"a11y.quick_expense_amount" = "Utgiftsbelopp";
+"a11y.quick_expense_wallet" = "Utgiftsplanbok";
+"a11y.quick_expense_category" = "Utgiftskategori";
+"a11y.quick_expense_note" = "Anteckning for utgift";
+"a11y.quick_expense_cancel" = "Avbryt snabb utgift";
+"a11y.quick_expense_save" = "Spara snabb utgift";
 "common.name" = "Namn";
 "common.type" = "Typ";
 "common.color" = "Färg";

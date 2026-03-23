@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		201D2BC41DB0B137AD35B371 /* OpenQuickExpenseIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */; };
 		27BFF6A52F5A2B9300F3E113 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6A42F5A2B9300F3E113 /* Auth */; };
 		27BFF6A72F5A2B9300F3E113 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6A62F5A2B9300F3E113 /* Functions */; };
 		27BFF6A92F5A2B9300F3E113 /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6A82F5A2B9300F3E113 /* PostgREST */; };
@@ -14,7 +15,15 @@
 		27BFF6AD2F5A2B9300F3E113 /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6AC2F5A2B9300F3E113 /* Storage */; };
 		27BFF6AF2F5A2BE900F3E113 /* Supabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27BFF6AE2F5A2BE000F3E113 /* Supabase.swift */; };
 		27BFF6B12F5A30AA00F3E113 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6B02F5A30AA00F3E113 /* Supabase */; };
+		2E50ECE5C9B0D40CBD92BC30 /* Localizable.strings in Sources */ = {isa = PBXBuildFile; fileRef = 6E4AD8BD5A7680B317107C19 /* Localizable.strings */; };
+		36BBB06EDC2064DEFCF67D60 /* Localizable.strings in Sources */ = {isa = PBXBuildFile; fileRef = 1F7629A172D4BC5D03617854 /* Localizable.strings */; };
+		452F5A789C0B3295A1F2B1DB /* ArgentumVaultControlsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B901F021538C5362A6385C4D /* ArgentumVaultControlsBundle.swift */; };
+		54184C12E6DA912A4E8D5CC7 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 06C721BFB7E1DEF6804428C9 /* Foundation.framework */; };
+		6C9A846C44B4154FB8977C18 /* Localizable.strings in Sources */ = {isa = PBXBuildFile; fileRef = 3EF4E334F580173E701B5643 /* Localizable.strings */; };
+		D1E338A2477D1CBFCD8C30A0 /* ArgentumVaultControlsExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 321F961FF782A833BE5F1445 /* ArgentumVaultControlsExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D4B1444387D9C775035A93BE /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = 40475D7599DCA5CC17EBCC31 /* GoogleMobileAds */; };
+		D84F3603CADF73929E5A0C65 /* NewExpenseControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EB355D8B54C94E24DB302C /* NewExpenseControl.swift */; };
+		FB2076843725FD1441BD4454 /* Localizable.strings in Sources */ = {isa = PBXBuildFile; fileRef = 98680CDCA62B56421A0C1219 /* Localizable.strings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,15 +41,45 @@
 			remoteGlobalIDString = 27945F632F33C774004B47E2;
 			remoteInfo = ArgentumVault;
 		};
+		617C0D021209796DA05C8867 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 27945F5C2F33C774004B47E2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 50BFB33448BFE19B35A92E5B;
+			remoteInfo = ArgentumVaultControlsExtension;
+		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		FD3542EF84547C61F89185F3 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				D1E338A2477D1CBFCD8C30A0 /* ArgentumVaultControlsExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
+		06C721BFB7E1DEF6804428C9 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		10EB355D8B54C94E24DB302C /* NewExpenseControl.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NewExpenseControl.swift; sourceTree = "<group>"; };
+		1F7629A172D4BC5D03617854 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = uk.lproj/Localizable.strings; sourceTree = "<group>"; };
 		27945F642F33C774004B47E2 /* ArgentumVault.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ArgentumVault.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		27945F752F33C775004B47E2 /* ArgentumVaultTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ArgentumVaultTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		27945F7F2F33C775004B47E2 /* ArgentumVaultUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ArgentumVaultUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		27BFF6AE2F5A2BE000F3E113 /* Supabase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Supabase.swift; sourceTree = "<group>"; };
-		A1C023001122334455667701 /* Config/AppConfig.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/AppConfig.xcconfig; sourceTree = "<group>"; };
-		A1C023001122334455667702 /* Config/Secrets.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig.example; sourceTree = "<group>"; };
+		321F961FF782A833BE5F1445 /* ArgentumVaultControlsExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ArgentumVaultControlsExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		3EF4E334F580173E701B5643 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OpenQuickExpenseIntent.swift; sourceTree = "<group>"; };
+		6E4AD8BD5A7680B317107C19 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = ru.lproj/Localizable.strings; sourceTree = "<group>"; };
+		98680CDCA62B56421A0C1219 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = sv.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A1C023001122334455667701 /* AppConfig.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/AppConfig.xcconfig; sourceTree = "<group>"; };
+		A1C023001122334455667702 /* Secrets.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig.example; sourceTree = "<group>"; };
+		B901F021538C5362A6385C4D /* ArgentumVaultControlsBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ArgentumVaultControlsBundle.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -64,11 +103,15 @@
 		};
 		27945F782F33C775004B47E2 /* ArgentumVaultTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = ArgentumVaultTests;
 			sourceTree = "<group>";
 		};
 		27945F822F33C775004B47E2 /* ArgentumVaultUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = ArgentumVaultUITests;
 			sourceTree = "<group>";
 		};
@@ -103,19 +146,29 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A6D9A94F984E61DFE1521536 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				54184C12E6DA912A4E8D5CC7 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
 		27945F5B2F33C774004B47E2 = {
 			isa = PBXGroup;
 			children = (
-				A1C023001122334455667701 /* Config/AppConfig.xcconfig */,
-				A1C023001122334455667702 /* Config/Secrets.xcconfig.example */,
+				A1C023001122334455667701 /* AppConfig.xcconfig */,
+				A1C023001122334455667702 /* Secrets.xcconfig.example */,
 				27BFF6AE2F5A2BE000F3E113 /* Supabase.swift */,
 				27945F662F33C774004B47E2 /* ArgentumVault */,
 				27945F782F33C775004B47E2 /* ArgentumVaultTests */,
 				27945F822F33C775004B47E2 /* ArgentumVaultUITests */,
 				27945F652F33C774004B47E2 /* Products */,
+				ABDB1FF1D83BC7B14B8EB5BF /* Frameworks */,
+				5A8FCB07AFFE3A0B28237EA0 /* ArgentumVaultControlsExtension */,
 			);
 			sourceTree = "<group>";
 		};
@@ -125,8 +178,40 @@
 				27945F642F33C774004B47E2 /* ArgentumVault.app */,
 				27945F752F33C775004B47E2 /* ArgentumVaultTests.xctest */,
 				27945F7F2F33C775004B47E2 /* ArgentumVaultUITests.xctest */,
+				321F961FF782A833BE5F1445 /* ArgentumVaultControlsExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		5A8FCB07AFFE3A0B28237EA0 /* ArgentumVaultControlsExtension */ = {
+			isa = PBXGroup;
+			children = (
+				B901F021538C5362A6385C4D /* ArgentumVaultControlsBundle.swift */,
+				10EB355D8B54C94E24DB302C /* NewExpenseControl.swift */,
+				5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */,
+				3EF4E334F580173E701B5643 /* Localizable.strings */,
+				6E4AD8BD5A7680B317107C19 /* Localizable.strings */,
+				1F7629A172D4BC5D03617854 /* Localizable.strings */,
+				98680CDCA62B56421A0C1219 /* Localizable.strings */,
+			);
+			name = ArgentumVaultControlsExtension;
+			path = ArgentumVaultControlsExtension;
+			sourceTree = "<group>";
+		};
+		6277AB001B430E4FBB162180 /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				06C721BFB7E1DEF6804428C9 /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
+		ABDB1FF1D83BC7B14B8EB5BF /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				6277AB001B430E4FBB162180 /* iOS */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -139,10 +224,12 @@
 				27945F602F33C774004B47E2 /* Sources */,
 				27945F612F33C774004B47E2 /* Frameworks */,
 				27945F622F33C774004B47E2 /* Resources */,
+				FD3542EF84547C61F89185F3 /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				27275738578C1749424FE116 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				27945F662F33C774004B47E2 /* ArgentumVault */,
@@ -203,6 +290,23 @@
 			productReference = 27945F7F2F33C775004B47E2 /* ArgentumVaultUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		50BFB33448BFE19B35A92E5B /* ArgentumVaultControlsExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3138FA4498CB2E0803B98D1A /* Build configuration list for PBXNativeTarget "ArgentumVaultControlsExtension" */;
+			buildPhases = (
+				414386648E435C429AD5E41D /* Sources */,
+				A6D9A94F984E61DFE1521536 /* Frameworks */,
+				48427A4C90B71272D7841F8A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ArgentumVaultControlsExtension;
+			productName = ArgentumVaultControlsExtension;
+			productReference = 321F961FF782A833BE5F1445 /* ArgentumVaultControlsExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -223,6 +327,9 @@
 					27945F7E2F33C775004B47E2 = {
 						CreatedOnToolsVersion = 26.2;
 						TestTargetID = 27945F632F33C774004B47E2;
+					};
+					50BFB33448BFE19B35A92E5B = {
+						CreatedOnToolsVersion = 26.2;
 					};
 				};
 			};
@@ -250,6 +357,7 @@
 				27945F632F33C774004B47E2 /* ArgentumVault */,
 				27945F742F33C775004B47E2 /* ArgentumVaultTests */,
 				27945F7E2F33C775004B47E2 /* ArgentumVaultUITests */,
+				50BFB33448BFE19B35A92E5B /* ArgentumVaultControlsExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -270,6 +378,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		27945F7D2F33C775004B47E2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		48427A4C90B71272D7841F8A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -301,9 +416,29 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		414386648E435C429AD5E41D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				452F5A789C0B3295A1F2B1DB /* ArgentumVaultControlsBundle.swift in Sources */,
+				D84F3603CADF73929E5A0C65 /* NewExpenseControl.swift in Sources */,
+				201D2BC41DB0B137AD35B371 /* OpenQuickExpenseIntent.swift in Sources */,
+				6C9A846C44B4154FB8977C18 /* Localizable.strings in Sources */,
+				2E50ECE5C9B0D40CBD92BC30 /* Localizable.strings in Sources */,
+				36BBB06EDC2064DEFCF67D60 /* Localizable.strings in Sources */,
+				FB2076843725FD1441BD4454 /* Localizable.strings in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		27275738578C1749424FE116 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ArgentumVaultControlsExtension;
+			target = 50BFB33448BFE19B35A92E5B /* ArgentumVaultControlsExtension */;
+			targetProxy = 617C0D021209796DA05C8867 /* PBXContainerItemProxy */;
+		};
 		27945F772F33C775004B47E2 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 27945F632F33C774004B47E2 /* ArgentumVault */;
@@ -317,9 +452,41 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		1E21BF4BBEE6695E3E8BEFF3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = X9W248M88B;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ArgentumVaultControlsExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.argentumvault.app.controls;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
 		27945F892F33C775004B47E2 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A1C023001122334455667701 /* Config/AppConfig.xcconfig */;
+			baseConfigurationReference = A1C023001122334455667701 /* AppConfig.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -369,7 +536,7 @@
 		};
 		27945F8A2F33C775004B47E2 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A1C023001122334455667701 /* Config/AppConfig.xcconfig */;
+			baseConfigurationReference = A1C023001122334455667701 /* AppConfig.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -635,6 +802,39 @@
 			};
 			name = Release;
 		};
+		DBF3E3843BD8C669AA9A94AA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = X9W248M88B;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ArgentumVaultControlsExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.argentumvault.app.controls;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -670,6 +870,15 @@
 			buildConfigurations = (
 				27945F912F33C775004B47E2 /* Debug */,
 				27945F922F33C775004B47E2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		3138FA4498CB2E0803B98D1A /* Build configuration list for PBXNativeTarget "ArgentumVaultControlsExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DBF3E3843BD8C669AA9A94AA /* Release */,
+				1E21BF4BBEE6695E3E8BEFF3 /* Debug */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

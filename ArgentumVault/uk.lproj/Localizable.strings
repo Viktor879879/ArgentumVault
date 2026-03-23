@@ -64,6 +64,14 @@
 "transaction.add_comment" = "Додати коментар";
 "transaction.select_photo" = "Обрати фото";
 "transaction.untagged" = "Без тегу";
+"quick_expense.title" = "Нова витрата";
+"quick_expense.recent_categories" = "Нещодавні категорії";
+"quick_expense.note_optional" = "Нотатка (необов'язково)";
+"quick_expense.no_wallets" = "Спочатку створіть гаманець, щоб додати витрату.";
+"quick_expense.no_categories" = "Спочатку створіть категорію витрат.";
+"quick_expense.amount_invalid" = "Введіть коректну суму більше 0.";
+"quick_expense.save_failed_title" = "Не вдалося зберегти витрату";
+"quick_expense.save_failed" = "Зараз не вдалося зберегти витрату. Спробуйте ще раз.";
 "wallet.new" = "Новий гаманець";
 "wallet.edit" = "Редагувати гаманець";
 "wallet.name_placeholder" = "Назва гаманця";
@@ -84,6 +92,12 @@
 "a11y.add_total_currency" = "Додати валюту підсумку";
 "a11y.add_folder" = "Додати папку";
 "a11y.add_wallet" = "Додати гаманець";
+"a11y.quick_expense_amount" = "Сума витрати";
+"a11y.quick_expense_wallet" = "Гаманець витрати";
+"a11y.quick_expense_category" = "Категорія витрати";
+"a11y.quick_expense_note" = "Нотатка до витрати";
+"a11y.quick_expense_cancel" = "Скасувати швидке додавання витрати";
+"a11y.quick_expense_save" = "Зберегти швидку витрату";
 "common.name" = "Назва";
 "common.type" = "Тип";
 "common.color" = "Колір";

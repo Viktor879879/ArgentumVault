@@ -57,8 +57,15 @@ private struct AdaptiveRootContainer<Content: View>: View {
     }
 }
 
+private enum RootTab: Hashable {
+    case home
+    case analytics
+    case settings
+}
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var quickExpenseRouter: QuickExpenseRouter
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
     @AppStorage("appCountryCode") private var appCountryCode = ""
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
@@ -82,6 +89,8 @@ struct ContentView: View {
     @State private var showSplash = true
     @State private var showOnboarding = false
     @State private var showGlobalPaywall = false
+    @State private var selectedRootTab: RootTab = .home
+    @State private var isShowingQuickExpense = false
     
     private var uiLanguageCode: String {
         if appLanguageCode == "system" {
@@ -116,18 +125,21 @@ struct ContentView: View {
             } else {
                 AdaptiveRootContainer(maxWidth: 1120) {
                     VStack(spacing: 0) {
-                        TabView {
+                        TabView(selection: $selectedRootTab) {
                             HomeView(rateService: rateService)
+                                .tag(RootTab.home)
                                 .tabItem {
                                     Label(L10n.text("tab.home", lang: uiLanguageCode), systemImage: "house.fill")
                                 }
 
                             AnalyticsView(rateService: rateService)
+                                .tag(RootTab.analytics)
                                 .tabItem {
                                     Label(L10n.text("tab.analytics", lang: uiLanguageCode), systemImage: "chart.pie.fill")
                                 }
 
                             SettingsView(rateService: rateService)
+                                .tag(RootTab.settings)
                                 .tabItem {
                                     Label(L10n.text("tab.settings", lang: uiLanguageCode), systemImage: "gearshape.fill")
                                 }
@@ -205,6 +217,7 @@ struct ContentView: View {
             await subscriptionManager.start()
         }
         .onAppear {
+            presentPendingQuickExpenseIfNeeded()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 withAnimation(.easeOut(duration: 0.25)) {
                     showSplash = false
@@ -216,9 +229,28 @@ struct ContentView: View {
         }
         .onChange(of: didCompleteInitialSetup) {
             guard didCompleteInitialSetup else { return }
+            presentPendingQuickExpenseIfNeeded()
             if !didShowOnboarding || forceShowOnboardingOnce {
                 showOnboarding = true
             }
+        }
+        .onChange(of: baseCurrencyCode) {
+            presentPendingQuickExpenseIfNeeded()
+        }
+        .onChange(of: appleUserID) {
+            presentPendingQuickExpenseIfNeeded()
+        }
+        .onChange(of: emailUserEmail) {
+            presentPendingQuickExpenseIfNeeded()
+        }
+        .onChange(of: showOnboarding) {
+            presentPendingQuickExpenseIfNeeded()
+        }
+        .onChange(of: showGlobalPaywall) {
+            presentPendingQuickExpenseIfNeeded()
+        }
+        .onChange(of: quickExpenseRouter.pendingRequestID) {
+            presentPendingQuickExpenseIfNeeded()
         }
         .onChange(of: appLanguageCode) {
             guard didCompleteInitialSetup else { return }
@@ -238,6 +270,9 @@ struct ContentView: View {
             PaywallView(lang: uiLanguageCode)
                 .environmentObject(subscriptionManager)
         }
+        .sheet(isPresented: $isShowingQuickExpense) {
+            QuickExpenseView(defaultCurrencyCode: baseCurrencyCode)
+        }
         .environment(\.locale, currentLocale)
         .preferredColorScheme(AppTheme.colorScheme(from: appTheme))
         .environmentObject(subscriptionManager)
@@ -248,6 +283,28 @@ struct ContentView: View {
             return .autoupdatingCurrent
         }
         return Locale(identifier: appLanguageCode)
+    }
+
+    private var canPresentQuickExpense: Bool {
+        isAccountConnected
+            && didCompleteInitialSetup
+            && !baseCurrencyCode.isEmpty
+            && !showOnboarding
+            && !showGlobalPaywall
+    }
+
+    private func presentPendingQuickExpenseIfNeeded() {
+        guard quickExpenseRouter.pendingRequestID != nil else { return }
+        guard !isShowingQuickExpense else {
+            quickExpenseRouter.consumePendingRequest()
+            return
+        }
+        guard canPresentQuickExpense else { return }
+
+        selectedRootTab = .home
+        showSplash = false
+        quickExpenseRouter.consumePendingRequest()
+        isShowingQuickExpense = true
     }
 }
 
@@ -3581,8 +3638,9 @@ struct AddTransactionView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L10n.text("common.save", lang: uiLanguageCode)) {
-                        saveTransaction()
-                        dismiss()
+                        if saveTransaction() {
+                            dismiss()
+                        }
                     }
                     .disabled(!canSave)
                 }
@@ -3626,89 +3684,53 @@ struct AddTransactionView: View {
         return appLanguageCode
     }
     
-    private func saveTransaction() {
-        guard let amount = parsedAmount else { return }
-        guard selectedWalletID != nil else { return }
+    private func saveTransaction() -> Bool {
+        guard let amount = parsedAmount else { return false }
+        guard selectedWalletID != nil else { return false }
         
         let selectedCategory = categories.first { $0.persistentModelID == selectedCategoryID }
         let selectedWallet = self.selectedWallet
         let selectedTransferWallet = self.selectedTransferWallet
         
         if transactionType == .transfer {
-            guard selectedTransferWallet != nil, parsedTransferAmount != nil else { return }
+            guard selectedTransferWallet != nil, parsedTransferAmount != nil else { return false }
         } else if selectedCategory == nil {
-            return
+            return false
         }
-        
-        let walletNameSnapshot = selectedWallet?.name
-        let walletKindRaw = selectedWallet?.kind.rawValue
-        let walletColorHexSnapshot = selectedWallet?.colorHex
-        let transferWalletNameSnapshot = selectedTransferWallet?.name
-        let transferWalletCurrencyCode = selectedTransferWallet?.assetCode
-        let transferWalletKindRaw = selectedTransferWallet?.kind.rawValue
-        let transferWalletColorHexSnapshot = selectedTransferWallet?.colorHex
-        let transferAmount = parsedTransferAmount
-        let safeDate = SecurityValidation.sanitizeDate(date)
-        let safeNote = SecurityValidation.sanitizeNote(note)
-        let safePhotoData = SecurityValidation.sanitizePhotoData(photoData)
-        let safeCurrencyCode =
-            SecurityValidation.sanitizeAssetCode(currencyCode)
-            ?? selectedWallet.flatMap { SecurityValidation.sanitizeAssetCode($0.assetCode) }
-            ?? SecurityValidation.sanitizeAssetCode(defaultCurrencyCode)
-            ?? "USD"
-        let safeWalletNameSnapshot = SecurityValidation.sanitizeOptionalSnapshotLabel(walletNameSnapshot)
-        let safeTransferWalletNameSnapshot = SecurityValidation.sanitizeOptionalSnapshotLabel(transferWalletNameSnapshot)
-        let safeTransferWalletCurrencyCode = transferWalletCurrencyCode.flatMap(SecurityValidation.sanitizeAssetCode)
-        
-        applyWalletChanges(
-            newWallet: selectedWallet,
-            newTransferWallet: selectedTransferWallet,
-            newAmount: amount,
-            newTransferAmount: transferAmount,
-            newType: transactionType
+
+        let originalState = TransactionEffectSnapshot(
+            walletID: originalWalletID,
+            transferWalletID: originalTransferWalletID,
+            amount: originalAmount,
+            transferAmount: originalTransferAmount,
+            type: originalType
         )
-        
-        if let transaction {
-            transaction.amount = amount
-            transaction.currencyCode = safeCurrencyCode
-            transaction.date = safeDate
-            transaction.note = safeNote
-            transaction.type = transactionType
-            transaction.photoData = safePhotoData
-            transaction.walletNameSnapshot = safeWalletNameSnapshot
-            transaction.walletKindRaw = walletKindRaw
-            transaction.walletColorHexSnapshot = walletColorHexSnapshot
-            transaction.transferWalletNameSnapshot = safeTransferWalletNameSnapshot
-            transaction.transferWalletCurrencyCode = safeTransferWalletCurrencyCode
-            transaction.transferWalletKindRaw = transferWalletKindRaw
-            transaction.transferWalletColorHexSnapshot = transferWalletColorHexSnapshot
-            transaction.transferAmount = transferAmount
-            transaction.category = selectedCategory
-            transaction.wallet = selectedWallet
-            transaction.transferWallet = selectedTransferWallet
-        } else {
-            let newTransaction = Transaction(
-                amount: amount,
-                currencyCode: safeCurrencyCode,
-                date: safeDate,
-                note: safeNote,
-                type: transactionType,
-                walletNameSnapshot: safeWalletNameSnapshot,
-                walletKindRaw: walletKindRaw,
-                walletColorHexSnapshot: walletColorHexSnapshot,
-                transferWalletNameSnapshot: safeTransferWalletNameSnapshot,
-                transferWalletCurrencyCode: safeTransferWalletCurrencyCode,
-                transferWalletKindRaw: transferWalletKindRaw,
-                transferWalletColorHexSnapshot: transferWalletColorHexSnapshot,
-                transferAmount: transferAmount,
-                photoData: safePhotoData,
-                category: selectedCategory,
-                wallet: selectedWallet,
-                transferWallet: selectedTransferWallet
+
+        do {
+            _ = try TransactionMutationService.save(
+                request: TransactionSaveRequest(
+                    transaction: transaction,
+                    originalState: transaction == nil ? nil : originalState,
+                    amount: amount,
+                    currencyCode: currencyCode,
+                    date: date,
+                    note: note,
+                    transactionType: transactionType,
+                    category: selectedCategory,
+                    wallet: selectedWallet,
+                    transferWallet: selectedTransferWallet,
+                    transferAmount: parsedTransferAmount,
+                    photoData: photoData,
+                    defaultCurrencyCode: defaultCurrencyCode
+                ),
+                modelContext: modelContext,
+                availableWallets: wallets
             )
-            modelContext.insert(newTransaction)
+
+            return true
+        } catch {
+            return false
         }
-        try? modelContext.save()
     }
     
     private func loadPhoto() async {
@@ -3846,59 +3868,6 @@ struct AddTransactionView: View {
         isTransferAmountManuallyEdited = false
     }
     
-    private func applyWalletChanges(
-        newWallet: Wallet?,
-        newTransferWallet: Wallet?,
-        newAmount: Decimal,
-        newTransferAmount: Decimal?,
-        newType: TransactionType
-    ) {
-        if let originalWalletID,
-           let originalWallet = wallets.first(where: { $0.persistentModelID == originalWalletID }) {
-            let originalTransferWallet = wallets.first(where: { $0.persistentModelID == originalTransferWalletID })
-            applyEffect(
-                sourceWallet: originalWallet,
-                destinationWallet: originalTransferWallet,
-                amount: originalAmount,
-                destinationAmount: originalTransferAmount,
-                type: originalType,
-                reversing: true
-            )
-        }
-        
-        if let newWallet {
-            applyEffect(
-                sourceWallet: newWallet,
-                destinationWallet: newTransferWallet,
-                amount: newAmount,
-                destinationAmount: newTransferAmount ?? newAmount,
-                type: newType,
-                reversing: false
-            )
-        }
-    }
-    
-    private func applyEffect(
-        sourceWallet: Wallet?,
-        destinationWallet: Wallet?,
-        amount: Decimal,
-        destinationAmount: Decimal,
-        type: TransactionType,
-        reversing: Bool
-    ) {
-        switch type {
-        case .expense:
-            guard let sourceWallet else { return }
-            sourceWallet.balance += reversing ? amount : -amount
-        case .income:
-            guard let sourceWallet else { return }
-            sourceWallet.balance += reversing ? -amount : amount
-        case .transfer:
-            guard let sourceWallet, let destinationWallet else { return }
-            sourceWallet.balance += reversing ? amount : -amount
-            destinationWallet.balance += reversing ? -destinationAmount : destinationAmount
-        }
-    }
 }
 
 struct AddWalletView: View {

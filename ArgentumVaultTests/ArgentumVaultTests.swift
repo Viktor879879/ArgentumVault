@@ -50,4 +50,10 @@ struct ArgentumVaultTests {
         #expect(AppleSignInCoordinator.sha256("argentum").count == 64)
         #expect(AppleSignInCoordinator.sha256("argentum") == AppleSignInCoordinator.sha256("argentum"))
     }
+
+    @Test func quickExpenseRouteMatchesExpectedDeepLink() async throws {
+        #expect(QuickExpenseRoute.matches(URL(string: "argentumvault://expense/new")!))
+        #expect(!QuickExpenseRoute.matches(URL(string: "argentumvault://expense/edit")!))
+        #expect(!QuickExpenseRoute.matches(URL(string: "otherapp://expense/new")!))
+    }
 }
