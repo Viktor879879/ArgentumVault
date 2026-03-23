@@ -63,6 +63,13 @@ private enum RootTab: Hashable {
     case settings
 }
 
+private enum RootContentState: String, Equatable {
+    case accountSetup
+    case preferencesSetup
+    case baseCurrencySetup
+    case main
+}
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var quickExpenseRouter: QuickExpenseRouter
@@ -86,7 +93,6 @@ struct ContentView: View {
 #endif
     @StateObject private var rateService = RateService()
     @StateObject private var subscriptionManager = SubscriptionManager()
-    @State private var showSplash = true
     @State private var showOnboarding = false
     @State private var showGlobalPaywall = false
     @State private var selectedRootTab: RootTab = .home
@@ -106,6 +112,19 @@ struct ContentView: View {
 
     private var isAccountConnected: Bool {
         !appleUserID.isEmpty || !emailUserEmail.isEmpty
+    }
+
+    private var rootContentState: RootContentState {
+        if !isAccountConnected {
+            return .accountSetup
+        }
+        if !didCompleteInitialSetup && baseCurrencyCode.isEmpty {
+            return .preferencesSetup
+        }
+        if baseCurrencyCode.isEmpty {
+            return .baseCurrencySetup
+        }
+        return .main
     }
     
     var body: some View {
@@ -154,12 +173,6 @@ struct ContentView: View {
                     }
                 }
                 .animation(.easeInOut(duration: 0.2), value: subscriptionManager.hasProAccess)
-            }
-            
-            if showSplash {
-                SplashView()
-                    .transition(.opacity)
-                    .zIndex(1)
             }
         }
         .dismissKeyboardOnTap()
@@ -217,12 +230,10 @@ struct ContentView: View {
             await subscriptionManager.start()
         }
         .onAppear {
+            AppFlowDiagnostics.launch("ContentView appear rootState=\(rootContentState.rawValue)")
             presentPendingQuickExpenseIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                withAnimation(.easeOut(duration: 0.25)) {
-                    showSplash = false
-                }
-                if didCompleteInitialSetup && (!didShowOnboarding || forceShowOnboardingOnce) {
+            if didCompleteInitialSetup && (!didShowOnboarding || forceShowOnboardingOnce) {
+                DispatchQueue.main.async {
                     showOnboarding = true
                 }
             }
@@ -258,6 +269,12 @@ struct ContentView: View {
                 modelContext: modelContext,
                 currentLanguageCode: uiLanguageCode
             )
+        }
+        .onChange(of: rootContentState) { _, newValue in
+            AppFlowDiagnostics.launch("ContentView root state changed state=\(newValue.rawValue)")
+        }
+        .onChange(of: selectedRootTab) { _, newValue in
+            AppFlowDiagnostics.launch("Root tab changed tab=\(String(describing: newValue))")
         }
         .fullScreenCover(isPresented: $showOnboarding) {
             OnboardingView(lang: uiLanguageCode) {
@@ -302,23 +319,8 @@ struct ContentView: View {
         guard canPresentQuickExpense else { return }
 
         selectedRootTab = .home
-        showSplash = false
         quickExpenseRouter.consumePendingRequest()
         isShowingQuickExpense = true
-    }
-}
-
-struct SplashView: View {
-    var body: some View {
-        ZStack {
-            // Keep splash background stable in dark mode to avoid black frame around a light logo asset.
-            Color(hex: "ECECECFF")
-                .ignoresSafeArea()
-            Image("LaunchLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 240, height: 240)
-        }
     }
 }
 
@@ -632,6 +634,9 @@ struct FirstLaunchSetupView: View {
     }
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
+        AppFlowDiagnostics.launch(
+            "FirstLaunchSetupView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         isAppleAuthInProgress = false
         appleUserID = credential.user
         emailUserID = session.userID
@@ -665,6 +670,9 @@ struct FirstLaunchSetupView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
+        AppFlowDiagnostics.launch(
+            "FirstLaunchSetupView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -4950,6 +4958,9 @@ struct SettingsView: View {
     }
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
+        AppFlowDiagnostics.launch(
+            "SettingsView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         isAppleAuthInProgress = false
         appleUserID = credential.user
         emailUserID = session.userID
@@ -5003,6 +5014,7 @@ struct SettingsView: View {
     }
 
     private func clearAccountSession() {
+        AppFlowDiagnostics.launch("SettingsView clearAccountSession")
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -5022,6 +5034,9 @@ struct SettingsView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
+        AppFlowDiagnostics.launch(
+            "SettingsView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -5073,6 +5088,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
+        AppFlowDiagnostics.sync("SettingsView forceCloudBackupNow accountIdentifier=\(accountIdentifier)")
         guard let token = startCloudDebugOperation(message: "Running forced backup...") else {
             return
         }
@@ -5097,6 +5113,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
+        AppFlowDiagnostics.sync("SettingsView restoreFromCloudNow accountIdentifier=\(accountIdentifier)")
         guard let token = startCloudDebugOperation(message: "Trying restore from remote...") else {
             return
         }
