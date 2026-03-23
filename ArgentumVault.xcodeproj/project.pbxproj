@@ -20,6 +20,8 @@
 		452F5A789C0B3295A1F2B1DB /* ArgentumVaultControlsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = B901F021538C5362A6385C4D /* ArgentumVaultControlsBundle.swift */; };
 		54184C12E6DA912A4E8D5CC7 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 06C721BFB7E1DEF6804428C9 /* Foundation.framework */; };
 		6C9A846C44B4154FB8977C18 /* Localizable.strings in Sources */ = {isa = PBXBuildFile; fileRef = 3EF4E334F580173E701B5643 /* Localizable.strings */; };
+		8AF72EA6CC44F615ED5AA985 /* NewExpenseControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EB355D8B54C94E24DB302C /* NewExpenseControl.swift */; };
+		D0B7ED3F7FD4B8CCC7AD037F /* OpenQuickExpenseIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */; };
 		D1E338A2477D1CBFCD8C30A0 /* ArgentumVaultControlsExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 321F961FF782A833BE5F1445 /* ArgentumVaultControlsExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D4B1444387D9C775035A93BE /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = 40475D7599DCA5CC17EBCC31 /* GoogleMobileAds */; };
 		D84F3603CADF73929E5A0C65 /* NewExpenseControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EB355D8B54C94E24DB302C /* NewExpenseControl.swift */; };
@@ -399,6 +401,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				27BFF6AF2F5A2BE900F3E113 /* Supabase.swift in Sources */,
+				D0B7ED3F7FD4B8CCC7AD037F /* OpenQuickExpenseIntent.swift in Sources */,
+				8AF72EA6CC44F615ED5AA985 /* NewExpenseControl.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
