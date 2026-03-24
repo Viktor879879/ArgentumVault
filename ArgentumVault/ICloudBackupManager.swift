@@ -28,8 +28,9 @@ enum ICloudBackupManager {
         let lastCloudError: String?
     }
 
-    // Lightweight periodic sync pass. Primary upload trigger is still save-driven backup.
-    static let periodicIntervalNanoseconds: UInt64 = 10_000_000_000 // 10 seconds
+    // Debounced save-driven backup is primary. Periodic sync is only a slow fallback retry.
+    static let periodicIntervalNanoseconds: UInt64 = 120_000_000_000 // 2 minutes
+    static let saveDrivenDebounceNanoseconds: UInt64 = 20_000_000_000 // 20 seconds
 
     private static let schemaVersion = 3
     private static let appSupportBackupFolder = "ArgentumVaultBackups"
@@ -1270,22 +1271,22 @@ enum ICloudBackupManager {
     }
 
     static func hasCoreFinancialData(in context: ModelContext) -> Bool {
-        guard let wallets = safeFetch(FetchDescriptor<Wallet>(), in: context) else { return true }
-        if !wallets.isEmpty { return true }
-
-        guard let transactions = safeFetch(FetchDescriptor<Transaction>(), in: context) else { return true }
-        if !transactions.isEmpty { return true }
-
-        guard let recurringRules = safeFetch(FetchDescriptor<RecurringTransactionRule>(), in: context) else { return true }
-        if !recurringRules.isEmpty { return true }
-
-        guard let budgets = safeFetch(FetchDescriptor<CategoryBudget>(), in: context) else { return true }
-        if !budgets.isEmpty { return true }
-
-        guard let folders = safeFetch(FetchDescriptor<WalletFolder>(), in: context) else { return true }
-        if !folders.isEmpty { return true }
-
+        if let hasWallets = safeHasAny(Wallet.self, in: context), hasWallets { return true }
+        if let hasTransactions = safeHasAny(Transaction.self, in: context), hasTransactions { return true }
+        if let hasRecurringRules = safeHasAny(RecurringTransactionRule.self, in: context), hasRecurringRules { return true }
+        if let hasBudgets = safeHasAny(CategoryBudget.self, in: context), hasBudgets { return true }
+        if let hasFolders = safeHasAny(WalletFolder.self, in: context), hasFolders { return true }
         return false
+    }
+
+    private static func safeHasAny<Model: PersistentModel>(
+        _ modelType: Model.Type,
+        in context: ModelContext
+    ) -> Bool? {
+        _ = modelType
+        var descriptor = FetchDescriptor<Model>()
+        descriptor.fetchLimit = 1
+        return safeFetch(descriptor, in: context).map { !$0.isEmpty }
     }
 
     private static func safeFetch<Model: PersistentModel>(
