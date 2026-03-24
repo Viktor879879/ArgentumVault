@@ -438,44 +438,22 @@ private struct AppBootstrapView: View {
                 return
             }
 
-            let restoreContext = ModelContext(container)
-            let hasLocalData = ICloudBackupManager.hasCoreFinancialData(in: restoreContext)
-            let didRestore: Bool
-            if hasLocalData {
-                didRestore = false
-                AppFlowDiagnostics.sync(
-                    "startup backup task skipped restore because local data already exists accountIdentifier=\(accountIdentifier)"
-                )
-            } else {
-                didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                    modelContext: restoreContext,
-                    accountIdentifier: accountIdentifier
-                )) ?? false
-            }
-
-            guard !Task.isCancelled else { return }
-            guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
-                return
-            }
-            if didRestore {
-                AppFlowDiagnostics.sync(
-                    "startup restore applied accountIdentifier=\(accountIdentifier); keeping runtime tree without launch rebootstrap"
-                )
-                return
-            }
-
             let backupContext = ModelContext(container)
-            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
-                modelContext: backupContext,
-                didRestore: didRestore
-            ) {
-                AppFlowDiagnostics.sync("startup backup task forcing backup after restore attempt accountIdentifier=\(accountIdentifier)")
+            if ICloudBackupManager.hasCoreFinancialData(in: backupContext) {
+                AppFlowDiagnostics.sync(
+                    "startup backup task skipping runtime restore and validating local snapshot accountIdentifier=\(accountIdentifier)"
+                )
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
                     accountIdentifier: accountIdentifier,
-                    force: didRestore
+                    force: false
                 )
+                return
             }
+
+            AppFlowDiagnostics.sync(
+                "startup backup task skipped because runtime restore is disabled and local data is empty accountIdentifier=\(accountIdentifier)"
+            )
         }
 
         periodicBackupTask = Task { @MainActor [container] in
