@@ -122,12 +122,15 @@ enum ICloudBackupManager {
     static func backupIfNeeded(modelContext: ModelContext, accountIdentifier: String, force: Bool = false) {
         let backupURL = backupFileURL(for: accountIdentifier)
         let bucket = accountBucket(accountIdentifier)
+        let startedAt = Date()
         AppFlowDiagnostics.sync(
             "backupIfNeeded start accountIdentifier=\(accountIdentifier) bucket=\(bucket) force=\(force)"
         )
         let now = Date().timeIntervalSince1970
         let lastAttemptKey = lastAttemptDefaultsPrefix + bucket
         let defaults = UserDefaults.standard
+        let hasPendingChanges = hasPendingLocalChanges(accountIdentifier: accountIdentifier)
+        let hasCloudSnapshot = hasSuccessfulCloudBackup(accountIdentifier: accountIdentifier)
         let lastAttempt = defaults.double(forKey: lastAttemptKey)
         if !force, lastAttempt > 0, (now - lastAttempt) < minimumAttemptInterval {
             AppFlowDiagnostics.sync(
@@ -148,13 +151,51 @@ enum ICloudBackupManager {
         cancelScheduledBackupRetry(for: bucket)
         defaults.set(now, forKey: lastAttemptKey)
 
+        if !force, !hasPendingChanges, hasCloudSnapshot {
+            AppFlowDiagnostics.sync(
+                "backupIfNeeded skipped no pending changes bucket=\(bucket) durationMs=\(elapsedMilliseconds(since: startedAt))"
+            )
+            return
+        }
+
         let hasCoreData = hasCoreFinancialData(in: modelContext)
 
         // Protect cloud snapshot from accidental overwrite with an empty state
         // right after first launch / fresh install on a new device.
         // If the account is already dirty, allow empty snapshots so deletions sync too.
-        if !force, !hasCoreData, !hasPendingLocalChanges(accountIdentifier: accountIdentifier) {
-            AppFlowDiagnostics.sync("backupIfNeeded skipped empty clean snapshot bucket=\(bucket)")
+        if !force, !hasCoreData, !hasPendingChanges {
+            AppFlowDiagnostics.sync(
+                "backupIfNeeded skipped empty clean snapshot bucket=\(bucket) durationMs=\(elapsedMilliseconds(since: startedAt))"
+            )
+            return
+        }
+
+        let lastHashKey = lastHashDefaultsPrefix + bucket
+        let lastCloudHashKey = lastCloudHashDefaultsPrefix + bucket
+        if !force,
+           let reusableLocalSnapshot = reusablePreparedLocalSnapshot(
+                accountIdentifier: accountIdentifier,
+                bucket: bucket,
+                defaults: defaults
+           ) {
+            AppFlowDiagnostics.sync(
+                "backupIfNeeded reusing prepared local snapshot bucket=\(bucket) payloadHash=\(reusableLocalSnapshot.payloadHash) durationMs=\(elapsedMilliseconds(since: startedAt))"
+            )
+            let localHashMatches = defaults.string(forKey: lastHashKey) == reusableLocalSnapshot.payloadHash
+            let cloudHashMatches = defaults.string(forKey: lastCloudHashKey) == reusableLocalSnapshot.payloadHash
+            if localHashMatches && cloudHashMatches {
+                defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
+                defaults.removeObject(forKey: localMutationTimestampDefaultsPrefix + bucket)
+                AppFlowDiagnostics.sync("backupIfNeeded skipped unchanged reusable snapshot bucket=\(bucket)")
+                return
+            }
+            uploadSnapshotToRemote(
+                payload: reusableLocalSnapshot.payload,
+                payloadHash: reusableLocalSnapshot.payloadHash,
+                bucket: bucket,
+                accountIdentifier: accountIdentifier,
+                force: false
+            )
             return
         }
 
@@ -166,14 +207,14 @@ enum ICloudBackupManager {
             let payload = try encoder.encode(snapshot)
 
             let payloadHash = try snapshotContentHash(snapshot)
-            let lastHashKey = lastHashDefaultsPrefix + bucket
-            let lastCloudHashKey = lastCloudHashDefaultsPrefix + bucket
             let localHashMatches = defaults.string(forKey: lastHashKey) == payloadHash
             let cloudHashMatches = defaults.string(forKey: lastCloudHashKey) == payloadHash
             if localHashMatches && cloudHashMatches && !force {
                 defaults.set(false, forKey: localDirtyDefaultsPrefix + bucket)
                 defaults.removeObject(forKey: localMutationTimestampDefaultsPrefix + bucket)
-                AppFlowDiagnostics.sync("backupIfNeeded skipped unchanged snapshot bucket=\(bucket)")
+                AppFlowDiagnostics.sync(
+                    "backupIfNeeded skipped unchanged snapshot bucket=\(bucket) durationMs=\(elapsedMilliseconds(since: startedAt))"
+                )
                 return
             }
 
@@ -188,7 +229,9 @@ enum ICloudBackupManager {
             defaults.set(payloadHash, forKey: lastHashKey)
             defaults.set(Date().timeIntervalSince1970, forKey: lastSuccessDefaultsPrefix + bucket)
             defaults.removeObject(forKey: lastErrorDefaultsKey)
-            AppFlowDiagnostics.sync("backupIfNeeded prepared local snapshot bucket=\(bucket) payloadHash=\(payloadHash)")
+            AppFlowDiagnostics.sync(
+                "backupIfNeeded prepared local snapshot bucket=\(bucket) payloadHash=\(payloadHash) durationMs=\(elapsedMilliseconds(since: startedAt))"
+            )
             uploadSnapshotToRemote(
                 payload: payload,
                 payloadHash: payloadHash,
@@ -201,7 +244,9 @@ enum ICloudBackupManager {
             defaults.set(description, forKey: lastErrorDefaultsKey)
             defaults.set(description, forKey: storageCloudKitErrorKey)
             defaults.set(reasonCode(for: error), forKey: storageCloudKitReasonKey)
-            AppFlowDiagnostics.sync("backupIfNeeded failed bucket=\(bucket) error=\(description)")
+            AppFlowDiagnostics.sync(
+                "backupIfNeeded failed bucket=\(bucket) error=\(description) durationMs=\(elapsedMilliseconds(since: startedAt))"
+            )
         }
     }
 
@@ -292,6 +337,11 @@ enum ICloudBackupManager {
     static func hasPendingLocalChanges(accountIdentifier: String) -> Bool {
         let bucket = accountBucket(accountIdentifier)
         return UserDefaults.standard.bool(forKey: localDirtyDefaultsPrefix + bucket)
+    }
+
+    static func hasSuccessfulCloudBackup(accountIdentifier: String) -> Bool {
+        let bucket = accountBucket(accountIdentifier)
+        return UserDefaults.standard.double(forKey: lastCloudSuccessDefaultsPrefix + bucket) > 0
     }
 
     static func consumeIgnoredSaveEventIfNeeded(accountIdentifier: String) -> Bool {
@@ -812,6 +862,29 @@ enum ICloudBackupManager {
 
     private static func currentSnapshotVersion(forBucket bucket: String) -> Int {
         max(0, UserDefaults.standard.integer(forKey: snapshotVersionDefaultsPrefix + bucket))
+    }
+
+    private static func reusablePreparedLocalSnapshot(
+        accountIdentifier: String,
+        bucket: String,
+        defaults: UserDefaults
+    ) -> PendingCloudUpload? {
+        let lastLocalSuccess = defaults.double(forKey: lastSuccessDefaultsPrefix + bucket)
+        let lastMutationAt = defaults.double(forKey: localMutationTimestampDefaultsPrefix + bucket)
+        guard lastLocalSuccess > 0, lastLocalSuccess >= lastMutationAt else {
+            return nil
+        }
+        guard let payloadHash = defaults.string(forKey: lastHashDefaultsPrefix + bucket),
+              let backupURL = backupFileURL(for: accountIdentifier),
+              let payload = try? Data(contentsOf: backupURL),
+              !payload.isEmpty else {
+            return nil
+        }
+        return PendingCloudUpload(payload: payload, payloadHash: payloadHash, force: false)
+    }
+
+    private static func elapsedMilliseconds(since startedAt: Date) -> Int {
+        Int(Date().timeIntervalSince(startedAt) * 1_000)
     }
 
     private static func sanitizedLanguageCode(_ raw: String?) -> String? {

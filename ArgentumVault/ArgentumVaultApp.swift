@@ -225,7 +225,7 @@ private struct AppBootstrapView: View {
             if newPhase == .active {
                 await switchContainerIfNeeded(refreshEntitlements: true, reason: "scenePhase.active")
             } else if newPhase == .inactive || newPhase == .background {
-                performImmediateBackupIfPossible(force: true)
+                performImmediateBackupIfPossible(force: true, requiresPendingChanges: true)
             }
         }
     }
@@ -427,21 +427,14 @@ private struct AppBootstrapView: View {
                 return
             }
 
-            if ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: accountIdentifier) {
-                AppFlowDiagnostics.sync("startup backup task uploading pending local changes accountIdentifier=\(accountIdentifier)")
-                let backupContext = ModelContext(container)
-                ICloudBackupManager.backupIfNeeded(
-                    modelContext: backupContext,
-                    accountIdentifier: accountIdentifier,
-                    force: false
-                )
-                return
-            }
-
             let backupContext = ModelContext(container)
-            if ICloudBackupManager.hasCoreFinancialData(in: backupContext) {
+            let hasPendingChanges = ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: accountIdentifier)
+            let hasLocalData = ICloudBackupManager.hasCoreFinancialData(in: backupContext)
+            let hasCloudSnapshot = ICloudBackupManager.hasSuccessfulCloudBackup(accountIdentifier: accountIdentifier)
+
+            if hasPendingChanges {
                 AppFlowDiagnostics.sync(
-                    "startup backup task skipping runtime restore and validating local snapshot accountIdentifier=\(accountIdentifier)"
+                    "startup backup task uploading pending local changes accountIdentifier=\(accountIdentifier)"
                 )
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
@@ -451,9 +444,19 @@ private struct AppBootstrapView: View {
                 return
             }
 
-            AppFlowDiagnostics.sync(
-                "startup backup task skipped because runtime restore is disabled and local data is empty accountIdentifier=\(accountIdentifier)"
-            )
+            if hasLocalData && !hasCloudSnapshot {
+                AppFlowDiagnostics.sync(
+                    "startup backup task seeding initial cloud snapshot accountIdentifier=\(accountIdentifier)"
+                )
+                ICloudBackupManager.backupIfNeeded(
+                    modelContext: backupContext,
+                    accountIdentifier: accountIdentifier,
+                    force: false
+                )
+                return
+            }
+
+            AppFlowDiagnostics.sync("startup backup task skipped accountIdentifier=\(accountIdentifier) hasLocalData=\(hasLocalData) hasCloudSnapshot=\(hasCloudSnapshot)")
         }
 
         periodicBackupTask = Task { @MainActor [container] in
@@ -469,16 +472,22 @@ private struct AppBootstrapView: View {
                 ) else {
                     continue
                 }
-                if ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: latestAccountIdentifier) {
+                let backupContext = ModelContext(container)
+                let hasPendingChanges = ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: latestAccountIdentifier)
+                let shouldSeedInitialSnapshot = ICloudBackupManager.hasCoreFinancialData(in: backupContext)
+                    && !ICloudBackupManager.hasSuccessfulCloudBackup(accountIdentifier: latestAccountIdentifier)
+                guard hasPendingChanges || shouldSeedInitialSnapshot else { continue }
+
+                if hasPendingChanges {
                     AppFlowDiagnostics.sync("periodic sync uploading pending local changes accountIdentifier=\(latestAccountIdentifier)")
-                    let backupContext = ModelContext(container)
-                    ICloudBackupManager.backupIfNeeded(
-                        modelContext: backupContext,
-                        accountIdentifier: latestAccountIdentifier,
-                        force: false
-                    )
-                    continue
+                } else {
+                    AppFlowDiagnostics.sync("periodic sync seeding initial cloud snapshot accountIdentifier=\(latestAccountIdentifier)")
                 }
+                ICloudBackupManager.backupIfNeeded(
+                    modelContext: backupContext,
+                    accountIdentifier: latestAccountIdentifier,
+                    force: false
+                )
             }
         }
     }
@@ -496,13 +505,7 @@ private struct AppBootstrapView: View {
 
         ICloudBackupManager.noteLocalMutation(accountIdentifier: accountIdentifier)
         AppFlowDiagnostics.sync("ModelContext.didSave noted local mutation accountIdentifier=\(accountIdentifier)")
-
-        saveTriggeredBackupTask?.cancel()
-        saveTriggeredBackupTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard !Task.isCancelled else { return }
-            performImmediateBackupIfPossible(force: false)
-        }
+        AppFlowDiagnostics.sync("ModelContext.didSave deferred upload to periodic/background sync accountIdentifier=\(accountIdentifier)")
     }
 
     @MainActor
@@ -520,7 +523,8 @@ private struct AppBootstrapView: View {
     private func performImmediateBackupIfPossible(
         container: ModelContainer? = nil,
         accountIdentifier: String? = nil,
-        force: Bool = false
+        force: Bool = false,
+        requiresPendingChanges: Bool = false
     ) {
         let resolvedContainer = container ?? modelContainer
         guard let resolvedContainer else { return }
@@ -528,10 +532,20 @@ private struct AppBootstrapView: View {
             ?? StorageModePolicy.currentCloudBackupAccountIdentifier()
             ?? lastKnownAccountIdentifier
         guard let resolvedAccountIdentifier, !resolvedAccountIdentifier.isEmpty else { return }
-        AppFlowDiagnostics.sync(
-            "performImmediateBackupIfPossible force=\(force) accountIdentifier=\(resolvedAccountIdentifier)"
-        )
+
+        let hasPendingChanges = ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: resolvedAccountIdentifier)
         let backupContext = ModelContext(resolvedContainer)
+        let shouldSeedInitialSnapshot = ICloudBackupManager.hasCoreFinancialData(in: backupContext)
+            && !ICloudBackupManager.hasSuccessfulCloudBackup(accountIdentifier: resolvedAccountIdentifier)
+        guard !requiresPendingChanges || hasPendingChanges || shouldSeedInitialSnapshot else {
+            AppFlowDiagnostics.sync(
+                "performImmediateBackupIfPossible skipped because no pending changes accountIdentifier=\(resolvedAccountIdentifier)"
+            )
+            return
+        }
+        AppFlowDiagnostics.sync(
+            "performImmediateBackupIfPossible force=\(force) accountIdentifier=\(resolvedAccountIdentifier) hasPendingChanges=\(hasPendingChanges) shouldSeedInitialSnapshot=\(shouldSeedInitialSnapshot)"
+        )
         ICloudBackupManager.backupIfNeeded(
             modelContext: backupContext,
             accountIdentifier: resolvedAccountIdentifier,
