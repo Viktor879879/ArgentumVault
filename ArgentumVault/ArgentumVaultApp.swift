@@ -42,6 +42,10 @@ private struct AppBootstrapView: View {
     @State private var containerEpoch = 0
     @State private var lastKnownAccountIdentifier: String?
     @State private var activeStoreAccountIdentifier: String?
+    @State private var backupPipelineContainerIdentifier: ObjectIdentifier?
+    @State private var backupPipelineAccountIdentifier: String?
+    @State private var backupPipelineRequestedCloud = false
+    @State private var backupPipelineUsesCloudKit = false
 
     init() {
         AppFlowDiagnostics.launch("AppBootstrapView init")
@@ -224,8 +228,10 @@ private struct AppBootstrapView: View {
         Task { @MainActor in
             if newPhase == .active {
                 await switchContainerIfNeeded(refreshEntitlements: true, reason: "scenePhase.active")
-            } else if newPhase == .inactive || newPhase == .background {
+            } else if newPhase == .background {
                 performImmediateBackupIfPossible(force: true, requiresPendingChanges: true)
+            } else if newPhase == .inactive {
+                AppFlowDiagnostics.sync("scenePhase inactive: immediate backup skipped")
             }
         }
     }
@@ -404,8 +410,20 @@ private struct AppBootstrapView: View {
         usesCloudKit: Bool,
         container: ModelContainer
     ) {
+        let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier()
+        let containerIdentifier = ObjectIdentifier(container)
+        if backupPipelineContainerIdentifier == containerIdentifier,
+           backupPipelineAccountIdentifier == accountIdentifier,
+           backupPipelineRequestedCloud == requestedCloud,
+           backupPipelineUsesCloudKit == usesCloudKit {
+            AppFlowDiagnostics.sync(
+                "configureICloudBackupPipeline skipped unchanged configuration requestedCloud=\(requestedCloud) usesCloudKit=\(usesCloudKit) accountIdentifier=\(accountIdentifier ?? "nil")"
+            )
+            return
+        }
+
         AppFlowDiagnostics.sync(
-            "configureICloudBackupPipeline requestedCloud=\(requestedCloud) usesCloudKit=\(usesCloudKit) accountIdentifier=\(StorageModePolicy.currentCloudBackupAccountIdentifier() ?? "nil") runtimeAutoRestore=false"
+            "configureICloudBackupPipeline requestedCloud=\(requestedCloud) usesCloudKit=\(usesCloudKit) accountIdentifier=\(accountIdentifier ?? "nil") runtimeAutoRestore=false"
         )
         startupBackupTask?.cancel()
         startupBackupTask = nil
@@ -414,7 +432,12 @@ private struct AppBootstrapView: View {
         saveTriggeredBackupTask?.cancel()
         saveTriggeredBackupTask = nil
 
-        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
+        backupPipelineContainerIdentifier = containerIdentifier
+        backupPipelineAccountIdentifier = accountIdentifier
+        backupPipelineRequestedCloud = requestedCloud
+        backupPipelineUsesCloudKit = usesCloudKit
+
+        guard requestedCloud, let accountIdentifier else {
             lastKnownAccountIdentifier = nil
             AppFlowDiagnostics.sync("configureICloudBackupPipeline disabled")
             return
