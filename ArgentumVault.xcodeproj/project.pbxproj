@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1F2E3D4C5B6A79880796A5B4 /* OpenQuickExpenseIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */; };
 		201D2BC41DB0B137AD35B371 /* OpenQuickExpenseIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */; };
 		27BFF6A52F5A2B9300F3E113 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6A42F5A2B9300F3E113 /* Auth */; };
 		27BFF6A72F5A2B9300F3E113 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6A62F5A2B9300F3E113 /* Functions */; };
@@ -399,6 +400,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1F2E3D4C5B6A79880796A5B4 /* OpenQuickExpenseIntent.swift in Sources */,
 				27BFF6AF2F5A2BE900F3E113 /* Supabase.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
