@@ -153,6 +153,13 @@
 "settings.account.sign_in_email" = "Logga in med Email";
 "settings.account.create_email" = "Skapa konto med Email";
 "settings.account.connected_email" = "Ansluten med Email";
+"settings.account.connected" = "Ansluten med Apple ID";
+"settings.account.sign_out" = "Logga ut";
+"settings.account.delete_account" = "Radera konto";
+"settings.account.delete_body" = "Ta bort ditt Argentum Vault-konto och synkroniserade molndata permanent.";
+"settings.account.delete_title" = "Radera konto?";
+"settings.account.delete_message" = "Detta raderar ditt Argentum Vault-konto permanent. Lokala kontodata pa den har enheten tas ocksa bort.";
+"settings.account.deleting" = "Raderar konto...";
 "settings.account.auth_mode" = "Autentisering";
 "settings.account.auth_mode.sign_in" = "Logga in";
 "settings.account.auth_mode.sign_up" = "Registrera";
@@ -161,6 +168,8 @@
 "settings.account.confirm_password" = "Bekrafta losenord";
 "settings.account.error_email_invalid" = "Ange en giltig email.";
 "settings.account.error_provider_unavailable" = "Inloggning med Apple ar inte konfigurerad for den har appen annu.";
+"settings.account.delete_error_failed" = "Kontoradering misslyckades. Distribuera backend-funktionen delete-account och forsok igen.";
+"settings.account.delete_error_unavailable" = "Kontoradering ar inte konfigurerad for den har releasen annu.";
 "settings.account.error_password_short" = "Losenordet maste vara minst 6 tecken.";
 "settings.account.error_password_mismatch" = "Losenorden matchar inte.";
 "settings.account.error_email_exists" = "Email-konto finns redan pa den har enheten.";

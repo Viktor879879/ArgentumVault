@@ -174,6 +174,11 @@
 "settings.account.confirm_password" = "Подтвердите пароль";
 "settings.account.connected" = "Подключено через Apple ID";
 "settings.account.sign_out" = "Выйти";
+"settings.account.delete_account" = "Удалить аккаунт";
+"settings.account.delete_body" = "Навсегда удалить аккаунт Argentum Vault и синхронизированные облачные данные.";
+"settings.account.delete_title" = "Удалить аккаунт?";
+"settings.account.delete_message" = "Это навсегда удалит ваш аккаунт Argentum Vault. Локальные данные аккаунта на этом устройстве тоже будут удалены.";
+"settings.account.deleting" = "Удаление аккаунта...";
 "settings.account.sync_hint_pro" = "Pro: данные синхронизируются и резервируются в облаке аккаунта.";
 "settings.account.sync_hint_free" = "Free: базовые функции доступны, данные хранятся только локально.";
 "settings.account.authorizing" = "Авторизация Apple ID...";
@@ -186,6 +191,8 @@
 "settings.account.error_not_interactive" = "Сейчас недоступен интерактивный вход.";
 "settings.account.error_unknown" = "Не удалось обработать вход через Apple.";
 "settings.account.error_provider_unavailable" = "Авторизация через Apple пока не настроена для этого приложения.";
+"settings.account.delete_error_failed" = "Не удалось удалить аккаунт. Разверните backend-функцию delete-account и повторите попытку.";
+"settings.account.delete_error_unavailable" = "Удаление аккаунта ещё не настроено для этого релиза.";
 "settings.account.error_email_invalid" = "Введите корректный email.";
 "settings.account.error_password_short" = "Пароль должен быть не короче 6 символов.";
 "settings.account.error_password_mismatch" = "Пароли не совпадают.";

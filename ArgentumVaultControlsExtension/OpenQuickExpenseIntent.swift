@@ -2,12 +2,13 @@ import AppIntents
 
 @available(iOS 18.0, *)
 struct OpenQuickExpenseIntent: AppIntent {
-    static let title: LocalizedStringResource = "AV New Expense Test"
-    static let description = IntentDescription("Opens Argentum Vault.")
-    static let openAppWhenRun = true
+    private static let quickExpenseURL = URL(string: "argentumvault://expense/new")!
+
+    static let title: LocalizedStringResource = "control.new_expense.intent_title"
+    static let description = IntentDescription("control.new_expense.description")
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
 
-    func perform() async throws -> some IntentResult {
-        .result()
+    func perform() async throws -> some IntentResult & OpensIntent {
+        .result(opensIntent: OpenURLIntent(Self.quickExpenseURL))
     }
 }

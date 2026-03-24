@@ -5,8 +5,8 @@ import WidgetKit
 @available(iOS 18.0, *)
 struct NewExpenseControl: ControlWidget {
     static let kind = "com.argentumvault.app.controls.new-expense"
-    private static let title: LocalizedStringResource = "AV New Expense Test"
-    private static let description: LocalizedStringResource = "Open Argentum Vault."
+    private static let title: LocalizedStringResource = "control.new_expense.title"
+    private static let description: LocalizedStringResource = "control.new_expense.description"
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(

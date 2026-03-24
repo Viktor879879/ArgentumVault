@@ -81,6 +81,7 @@
 		98680CDCA62B56421A0C1219 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = sv.lproj/Localizable.strings; sourceTree = "<group>"; };
 		A1C023001122334455667701 /* AppConfig.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/AppConfig.xcconfig; sourceTree = "<group>"; };
 		A1C023001122334455667702 /* Secrets.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig.example; sourceTree = "<group>"; };
+		A1C023001122334455667703 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = "<group>"; };
 		B901F021538C5362A6385C4D /* ArgentumVaultControlsBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ArgentumVaultControlsBundle.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -158,12 +159,36 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A1C023001122334455667704 /* Validate Release Secrets */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Validate Release Secrets";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"$CONFIGURATION\" != \"Release\" ]; then\n  exit 0\nfi\n\ncase \"$SUPABASE_URL\" in\n  \"\"|*\"YOUR-PROJECT\"*)\n    echo \"error: SUPABASE_URL must be set to a real value for Release builds. Copy Config/Secrets.xcconfig.example to Config/Secrets.xcconfig.\"\n    exit 1\n    ;;\nesac\n\ncase \"$SUPABASE_ANON_KEY\" in\n  \"\"|sb_publishable_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx)\n    echo \"error: SUPABASE_ANON_KEY must be set to a real value for Release builds. Copy Config/Secrets.xcconfig.example to Config/Secrets.xcconfig.\"\n    exit 1\n    ;;\nesac\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXGroup section */
 		27945F5B2F33C774004B47E2 = {
 			isa = PBXGroup;
 			children = (
 				A1C023001122334455667701 /* AppConfig.xcconfig */,
 				A1C023001122334455667702 /* Secrets.xcconfig.example */,
+				A1C023001122334455667703 /* Release.xcconfig */,
 				27BFF6AE2F5A2BE000F3E113 /* Supabase.swift */,
 				27945F662F33C774004B47E2 /* ArgentumVault */,
 				27945F782F33C775004B47E2 /* ArgentumVaultTests */,
@@ -225,6 +250,7 @@
 			buildPhases = (
 				27945F602F33C774004B47E2 /* Sources */,
 				27945F612F33C774004B47E2 /* Frameworks */,
+				A1C023001122334455667704 /* Validate Release Secrets */,
 				27945F622F33C774004B47E2 /* Resources */,
 				FD3542EF84547C61F89185F3 /* Embed App Extensions */,
 			);
@@ -539,12 +565,12 @@
 		};
 		27945F8A2F33C775004B47E2 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A1C023001122334455667701 /* AppConfig.xcconfig */;
+			baseConfigurationReference = A1C023001122334455667703 /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ArgentumVault/MoneyGram.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = X9W248M88B;
@@ -810,6 +836,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = X9W248M88B;

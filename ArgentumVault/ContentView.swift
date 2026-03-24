@@ -379,13 +379,13 @@ struct FirstLaunchSetupView: View {
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
 
-    @State private var appleSignInCoordinator = AppleSignInCoordinator()
     @State private var step: FirstSetupStep = .account
     @State private var selectedLanguageCode = FirstLaunchSetupView.defaultLanguageCode()
     @State private var selectedCurrencyCode = CurrencyCatalog.baseCurrencies.first?.code ?? "USD"
     @State private var selectedCountryCode = CountryCatalog.defaultCountryCode()
     @State private var showAppleAuthError = false
     @State private var appleAuthErrorMessage = ""
+    @State private var currentAppleAuthNonce = ""
     @State private var isAppleAuthInProgress = false
     @State private var activeEmailAuthMode: EmailAuthMode?
 
@@ -427,7 +427,10 @@ struct FirstLaunchSetupView: View {
 
                             if !isAccountConnected {
                                 VStack(spacing: 14) {
-                                    AppleSignInActionButton(title: L10n.text("settings.account.sign_in_apple", lang: uiLanguageCode), action: startAppleSignIn)
+                                    AppleSignInActionButton(
+                                        onRequest: configureAppleSignInRequest,
+                                        onCompletion: handleAppleSignInCompletion
+                                    )
                                         .disabled(isAppleAuthInProgress)
 
                                     if isAppleAuthInProgress {
@@ -631,6 +634,37 @@ struct FirstLaunchSetupView: View {
         }
     }
 
+    private func configureAppleSignInRequest(_ request: ASAuthorizationAppleIDRequest) {
+        let rawNonce = AppleSignInCoordinator.randomNonceString()
+        currentAppleAuthNonce = rawNonce
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = AppleSignInCoordinator.sha256(rawNonce)
+    }
+
+    private func handleAppleSignInCompletion(_ result: Result<ASAuthorization, Error>) {
+        let rawNonce = currentAppleAuthNonce.trimmed
+        currentAppleAuthNonce = ""
+
+        switch result {
+        case .success(let authorization):
+            guard !rawNonce.isEmpty else {
+                appleAuthErrorMessage = L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+                showAppleAuthError = true
+                return
+            }
+            handleAppleSignIn(
+                result: .success(
+                    AppleSignInAuthorization(
+                        authorization: authorization,
+                        rawNonce: rawNonce
+                    )
+                )
+            )
+        case .failure(let error):
+            handleAppleSignIn(result: .failure(error))
+        }
+    }
+
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
         isAppleAuthInProgress = false
         appleUserID = credential.user
@@ -682,13 +716,6 @@ struct FirstLaunchSetupView: View {
 
     private func openEmailAuth(mode: EmailAuthMode) {
         activeEmailAuthMode = mode
-    }
-
-    private func startAppleSignIn() {
-        guard !isAppleAuthInProgress else { return }
-        appleSignInCoordinator.start { result in
-            handleAppleSignIn(result: result)
-        }
     }
 
     private func triggerProRestoreAfterAuthorization() {
@@ -828,6 +855,7 @@ struct FirstLaunchSetupView: View {
         }
         return error.localizedDescription
     }
+
 }
 
 struct HomeView: View {
@@ -4348,9 +4376,13 @@ struct SettingsView: View {
     @State private var showAppleAuthError = false
     @State private var appleAuthErrorMessage = ""
     @State private var isAppleAuthInProgress = false
+    @State private var currentAppleAuthNonce = ""
+    @State private var showDeleteAccountConfirmation = false
+    @State private var showDeleteAccountError = false
+    @State private var deleteAccountErrorMessage = ""
+    @State private var isDeletingAccount = false
     @State private var showPaywall = false
     @State private var showEmailAuthSheet = false
-    @State private var appleSignInCoordinator = AppleSignInCoordinator()
 #if DEBUG
     @State private var cloudDebugStatus: ICloudBackupManager.SnapshotDebugStatus?
     @State private var cloudDebugMessage = ""
@@ -4402,11 +4434,10 @@ struct SettingsView: View {
             List {
                 Section(L10n.text("settings.account", lang: uiLanguageCode)) {
                     if !isAccountConnected {
-                        AppleSignInActionButton(title: L10n.text("settings.account.sign_in_apple", lang: uiLanguageCode)) {
-                            appleSignInCoordinator.start { result in
-                                handleAppleSignIn(result: result)
-                            }
-                        }
+                        AppleSignInActionButton(
+                            onRequest: configureAppleSignInRequest,
+                            onCompletion: handleAppleSignInCompletion
+                        )
                         .disabled(isAppleAuthInProgress)
 
                         if isAppleAuthInProgress {
@@ -4457,8 +4488,29 @@ struct SettingsView: View {
                                 .foregroundStyle(.red)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .disabled(isDeletingAccount)
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
+
+                        Button(role: .destructive) {
+                            showDeleteAccountConfirmation = true
+                        } label: {
+                            Text(L10n.text("settings.account.delete_account", lang: uiLanguageCode))
+                                .foregroundStyle(.red)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .disabled(isDeletingAccount)
+                        .buttonStyle(.plain)
+                        .contentShape(Rectangle())
+
+                        Text(L10n.text("settings.account.delete_body", lang: uiLanguageCode))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
+                        if isDeletingAccount {
+                            ProgressView(L10n.text("settings.account.deleting", lang: uiLanguageCode))
+                                .font(.footnote)
+                        }
                     }
                 }
 #if DEBUG
@@ -4800,6 +4852,26 @@ struct SettingsView: View {
             } message: {
                 Text(appleAuthErrorMessage)
             }
+            .confirmationDialog(
+                L10n.text("settings.account.delete_title", lang: uiLanguageCode),
+                isPresented: $showDeleteAccountConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.text("settings.account.delete_account", lang: uiLanguageCode), role: .destructive) {
+                    deleteCurrentAccount()
+                }
+                Button(L10n.text("common.cancel", lang: uiLanguageCode), role: .cancel) {}
+            } message: {
+                Text(L10n.text("settings.account.delete_message", lang: uiLanguageCode))
+            }
+            .alert(
+                L10n.text("settings.account.error_title", lang: uiLanguageCode),
+                isPresented: $showDeleteAccountError
+            ) {
+                Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
+            } message: {
+                Text(deleteAccountErrorMessage)
+            }
             .onAppear {
                 if appCountryCode.isEmpty {
                     appCountryCode = CountryCatalog.defaultCountryCode()
@@ -4949,6 +5021,37 @@ struct SettingsView: View {
         }
     }
 
+    private func configureAppleSignInRequest(_ request: ASAuthorizationAppleIDRequest) {
+        let rawNonce = AppleSignInCoordinator.randomNonceString()
+        currentAppleAuthNonce = rawNonce
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = AppleSignInCoordinator.sha256(rawNonce)
+    }
+
+    private func handleAppleSignInCompletion(_ result: Result<ASAuthorization, Error>) {
+        let rawNonce = currentAppleAuthNonce.trimmed
+        currentAppleAuthNonce = ""
+
+        switch result {
+        case .success(let authorization):
+            guard !rawNonce.isEmpty else {
+                appleAuthErrorMessage = L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+                showAppleAuthError = true
+                return
+            }
+            handleAppleSignIn(
+                result: .success(
+                    AppleSignInAuthorization(
+                        authorization: authorization,
+                        rawNonce: rawNonce
+                    )
+                )
+            )
+        case .failure(let error):
+            handleAppleSignIn(result: .failure(error))
+        }
+    }
+
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
         isAppleAuthInProgress = false
         appleUserID = credential.user
@@ -5018,6 +5121,46 @@ struct SettingsView: View {
             await MainActor.run {
                 clearAccountSession()
             }
+        }
+    }
+
+    private func deleteCurrentAccount() {
+        guard !isDeletingAccount else { return }
+        guard let accountID = currentSetupAccountID() else {
+            deleteAccountErrorMessage = L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+            showDeleteAccountError = true
+            return
+        }
+
+        isDeletingAccount = true
+
+        Task {
+            do {
+                try await EmailAuthManager.deleteCurrentAccount()
+                await MainActor.run {
+                    isDeletingAccount = false
+                    completeDeletedAccountCleanup(accountID: accountID)
+                }
+            } catch {
+                await MainActor.run {
+                    isDeletingAccount = false
+                    deleteAccountErrorMessage = localizedAccountDeletionError(error)
+                    showDeleteAccountError = true
+                }
+            }
+        }
+    }
+
+    private func completeDeletedAccountCleanup(accountID: String) {
+        try? SetupProfileStore.delete(for: accountID)
+        baseCurrencyCode = ""
+        appCountryCode = ""
+        didCompleteInitialSetup = false
+        clearAccountSession()
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            AccountScopedDataPurger.purgeArtifacts(for: accountID)
         }
     }
 
@@ -5260,6 +5403,17 @@ struct SettingsView: View {
             }
         }
         return error.localizedDescription
+    }
+
+    private func localizedAccountDeletionError(_ error: Error) -> String {
+        switch error {
+        case AccountDeletionError.sessionRequired:
+            return L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+        case AccountDeletionError.requestFailed:
+            return L10n.text("settings.account.delete_error_failed", lang: uiLanguageCode)
+        default:
+            return error.localizedDescription
+        }
     }
 }
 
@@ -5913,6 +6067,19 @@ private enum SetupProfileStore {
 
         throw EmailAuthError.storageFailure
     }
+
+    static func delete(for accountID: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountID
+        ]
+
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw EmailAuthError.storageFailure
+        }
+    }
 }
 
 
@@ -5923,22 +6090,13 @@ private extension String {
 }
 
 private struct AppleSignInActionButton: View {
-    let title: String
-    let action: () -> Void
+    let onRequest: (ASAuthorizationAppleIDRequest) -> Void
+    let onCompletion: (Result<ASAuthorization, Error>) -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "applelogo")
-                    .font(.headline)
-                Text(title)
-                    .font(.headline)
-            }
+        SignInWithAppleButton(.continue, onRequest: onRequest, onCompletion: onCompletion)
+            .signInWithAppleButtonStyle(.black)
             .frame(maxWidth: .infinity, minHeight: 44)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(.black)
-        .foregroundStyle(.white)
     }
 }
 

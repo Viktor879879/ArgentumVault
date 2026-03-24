@@ -28,8 +28,8 @@ enum ICloudBackupManager {
         let lastCloudError: String?
     }
 
-    // Lightweight periodic sync pass. Primary upload trigger is still save-driven backup.
-    static let periodicIntervalNanoseconds: UInt64 = 10_000_000_000 // 10 seconds
+    // Keep passive sync light in production. Save-driven backup remains the primary trigger.
+    static let periodicIntervalNanoseconds: UInt64 = 300_000_000_000 // 5 minutes
 
     private static let schemaVersion = 3
     private static let appSupportBackupFolder = "ArgentumVaultBackups"
@@ -261,6 +261,34 @@ enum ICloudBackupManager {
         defaults.set(true, forKey: localDirtyDefaultsPrefix + bucket)
         defaults.set(Date().timeIntervalSince1970, forKey: localMutationTimestampDefaultsPrefix + bucket)
         defaults.set(currentSnapshotVersion(forBucket: bucket) + 1, forKey: snapshotVersionDefaultsPrefix + bucket)
+    }
+
+    static func deleteBackupArtifacts(for accountIdentifier: String) {
+        let bucket = accountBucket(accountIdentifier)
+        let defaults = UserDefaults.standard
+        let keysToClear = [
+            lastHashDefaultsPrefix + bucket,
+            lastCloudHashDefaultsPrefix + bucket,
+            lastAttemptDefaultsPrefix + bucket,
+            lastSuccessDefaultsPrefix + bucket,
+            lastCloudSuccessDefaultsPrefix + bucket,
+            lastCloudErrorDefaultsPrefix + bucket,
+            localDirtyDefaultsPrefix + bucket,
+            localMutationTimestampDefaultsPrefix + bucket,
+            snapshotVersionDefaultsPrefix + bucket,
+            lastErrorDefaultsKey,
+            storageCloudKitErrorKey,
+            storageCloudKitReasonKey,
+        ]
+
+        for key in keysToClear {
+            defaults.removeObject(forKey: key)
+        }
+
+        if let backupURL = backupFileURL(for: accountIdentifier),
+           FileManager.default.fileExists(atPath: backupURL.path) {
+            try? FileManager.default.removeItem(at: backupURL)
+        }
     }
 
     static func hasPendingLocalChanges(accountIdentifier: String) -> Bool {

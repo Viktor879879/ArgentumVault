@@ -153,6 +153,13 @@
 "settings.account.sign_in_email" = "Увійти через Email";
 "settings.account.create_email" = "Створити акаунт через Email";
 "settings.account.connected_email" = "Підключено через Email";
+"settings.account.connected" = "Підключено через Apple ID";
+"settings.account.sign_out" = "Вийти";
+"settings.account.delete_account" = "Видалити акаунт";
+"settings.account.delete_body" = "Назавжди видалити акаунт Argentum Vault і синхронізовані хмарні дані.";
+"settings.account.delete_title" = "Видалити акаунт?";
+"settings.account.delete_message" = "Це назавжди видалить ваш акаунт Argentum Vault. Локальні дані акаунта на цьому пристрої також буде видалено.";
+"settings.account.deleting" = "Видалення акаунта...";
 "settings.account.auth_mode" = "Авторизація";
 "settings.account.auth_mode.sign_in" = "Вхід";
 "settings.account.auth_mode.sign_up" = "Реєстрація";
@@ -161,6 +168,8 @@
 "settings.account.confirm_password" = "Підтвердьте пароль";
 "settings.account.error_email_invalid" = "Введіть коректний email.";
 "settings.account.error_provider_unavailable" = "Вхід через Apple ще не налаштовано для цього застосунку.";
+"settings.account.delete_error_failed" = "Не вдалося видалити акаунт. Розгорніть backend-функцію delete-account і повторіть спробу.";
+"settings.account.delete_error_unavailable" = "Видалення акаунта ще не налаштовано для цього релізу.";
 "settings.account.error_password_short" = "Пароль має містити щонайменше 6 символів.";
 "settings.account.error_password_mismatch" = "Паролі не збігаються.";
 "settings.account.error_email_exists" = "Email-акаунт уже створено на цьому пристрої.";

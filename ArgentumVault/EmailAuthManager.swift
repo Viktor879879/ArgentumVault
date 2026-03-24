@@ -13,6 +13,11 @@ struct AppAuthSession {
     let authMethod: AppAuthMethod
 }
 
+enum AccountDeletionError: Error {
+    case sessionRequired
+    case requestFailed
+}
+
 enum EmailAuthManager {
     private static let clientResult: Result<SupabaseClient, EmailAuthError> = {
         do {
@@ -75,6 +80,26 @@ enum EmailAuthManager {
     static func signOutCurrentSession() async {
         guard let client = try? configuredClient() else { return }
         try? await client.auth.signOut(scope: .local)
+    }
+
+    static func deleteCurrentAccount() async throws {
+        let client = try configuredClient()
+
+        do {
+            _ = try await client.auth.session
+        } catch {
+            throw AccountDeletionError.sessionRequired
+        }
+
+        do {
+            try await client.functions.invoke(
+                "delete-account",
+                options: .init(method: .post)
+            )
+            try? await client.auth.signOut(scope: .local)
+        } catch {
+            throw AccountDeletionError.requestFailed
+        }
     }
 
     private static func signUp(email: String, password: String, confirmPassword: String) async throws -> AppAuthSession {
