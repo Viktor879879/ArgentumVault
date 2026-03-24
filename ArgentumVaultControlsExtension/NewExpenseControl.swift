@@ -5,6 +5,8 @@ import WidgetKit
 @available(iOS 18.0, *)
 struct NewExpenseControl: ControlWidget {
     static let kind = "com.argentumvault.app.controls.new-expense"
+    private static let title: LocalizedStringResource = "AV New Expense Test"
+    private static let description: LocalizedStringResource = "Open Argentum Vault."
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(
@@ -13,14 +15,14 @@ struct NewExpenseControl: ControlWidget {
         ) { _ in
             ControlWidgetButton(action: OpenQuickExpenseIntent()) {
                 Label {
-                    Text(LocalizedStringResource("control.new_expense.title"))
+                    Text(Self.title)
                 } icon: {
                     Image(systemName: "plus.circle.fill")
                 }
             }
         }
-        .displayName(LocalizedStringResource("control.new_expense.title"))
-        .description(LocalizedStringResource("control.new_expense.description"))
+        .displayName(Self.title)
+        .description(Self.description)
     }
 }
 
