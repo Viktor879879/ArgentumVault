@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 import AuthenticationServices
 import Security
 import Auth
+import OSLog
 
 #if canImport(UIKit)
 import UIKit
@@ -81,6 +82,7 @@ struct ContentView: View {
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
     @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
+    @AppStorage("pendingAccountDeletionNotice") private var pendingAccountDeletionNotice = ""
 #if DEBUG
     @AppStorage("debugResetFirstLaunchOnce_v5") private var debugResetFirstLaunchOnce = true
 #endif
@@ -91,6 +93,7 @@ struct ContentView: View {
     @State private var showGlobalPaywall = false
     @State private var selectedRootTab: RootTab = .home
     @State private var isShowingQuickExpense = false
+    @State private var showAccountDeletionNotice = false
     
     private var uiLanguageCode: String {
         if appLanguageCode == "system" {
@@ -222,6 +225,7 @@ struct ContentView: View {
         }
         .onAppear {
             presentPendingQuickExpenseIfNeeded()
+            presentPendingAccountDeletionNoticeIfNeeded()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
                 withAnimation(.easeOut(duration: 0.25)) {
                     showSplash = false
@@ -246,6 +250,12 @@ struct ContentView: View {
         }
         .onChange(of: emailUserEmail) {
             presentPendingQuickExpenseIfNeeded()
+        }
+        .onChange(of: pendingAccountDeletionNotice) {
+            presentPendingAccountDeletionNoticeIfNeeded()
+        }
+        .onChange(of: isAccountConnected) {
+            presentPendingAccountDeletionNoticeIfNeeded()
         }
         .onChange(of: showOnboarding) {
             presentPendingQuickExpenseIfNeeded()
@@ -276,6 +286,16 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingQuickExpense) {
             QuickExpenseView(defaultCurrencyCode: baseCurrencyCode)
+        }
+        .alert(
+            L10n.text("settings.account.delete_success_title", lang: uiLanguageCode),
+            isPresented: $showAccountDeletionNotice
+        ) {
+            Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {
+                pendingAccountDeletionNotice = ""
+            }
+        } message: {
+            Text(pendingAccountDeletionNotice)
         }
         .environment(\.locale, currentLocale)
         .preferredColorScheme(AppTheme.colorScheme(from: appTheme))
@@ -309,6 +329,11 @@ struct ContentView: View {
         showSplash = false
         quickExpenseRouter.consumePendingRequest()
         isShowingQuickExpense = true
+    }
+
+    private func presentPendingAccountDeletionNoticeIfNeeded() {
+        guard !isAccountConnected else { return }
+        showAccountDeletionNotice = !pendingAccountDeletionNotice.trimmed.isEmpty
     }
 }
 
@@ -4351,6 +4376,7 @@ struct SettingsView: View {
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
     @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
+    @AppStorage("pendingAccountDeletionNotice") private var pendingAccountDeletionNotice = ""
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
 
     @ObservedObject var rateService: RateService
@@ -4486,26 +4512,6 @@ struct SettingsView: View {
                         .disabled(isDeletingAccount)
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
-
-                        Button(role: .destructive) {
-                            showDeleteAccountConfirmation = true
-                        } label: {
-                            Text(L10n.text("settings.account.delete_account", lang: uiLanguageCode))
-                                .foregroundStyle(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .disabled(isDeletingAccount)
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-
-                        Text(L10n.text("settings.account.delete_body", lang: uiLanguageCode))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-
-                        if isDeletingAccount {
-                            ProgressView(L10n.text("settings.account.deleting", lang: uiLanguageCode))
-                                .font(.footnote)
-                        }
                     }
                 }
 #if DEBUG
@@ -4800,6 +4806,44 @@ struct SettingsView: View {
                         .accessibilityLabel(L10n.text("settings.new_tags", lang: uiLanguageCode))
                     }
                 }
+
+                if isAccountConnected {
+                    Section {
+                        Button(role: .destructive) {
+                            showDeleteAccountConfirmation = true
+                        } label: {
+                            HStack(spacing: 10) {
+                                Label {
+                                    Text(L10n.text("settings.account.delete_account", lang: uiLanguageCode))
+                                        .font(.body.weight(.semibold))
+                                } icon: {
+                                    Image(systemName: "trash")
+                                }
+                                Spacer()
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .disabled(isDeletingAccount)
+
+                        Text(L10n.text("settings.account.delete_body", lang: uiLanguageCode))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if isDeletingAccount {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text(L10n.text("settings.account.deleting", lang: uiLanguageCode))
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text(L10n.text("settings.account.danger_zone", lang: uiLanguageCode))
+                            .textCase(nil)
+                    }
+                }
             }
             .navigationTitle(L10n.text("tab.settings", lang: uiLanguageCode))
             .sheet(isPresented: $isAddingCategory) {
@@ -4860,7 +4904,7 @@ struct SettingsView: View {
                 Text(L10n.text("settings.account.delete_message", lang: uiLanguageCode))
             }
             .alert(
-                L10n.text("settings.account.error_title", lang: uiLanguageCode),
+                L10n.text("settings.account.delete_error_title", lang: uiLanguageCode),
                 isPresented: $showDeleteAccountError
             ) {
                 Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
@@ -5114,17 +5158,34 @@ struct SettingsView: View {
             return
         }
 
+        let resolvedAuthMethod = AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).effectiveAuthMethod?.rawValue ?? authMethod.trimmed.lowercased()
+        let accountBucket = AccountBucketHasher.bucket(for: accountID)
+        AppDiagnostics.accountDeletion.debug(
+            "deleteCurrentAccount flow start authMethod=\(resolvedAuthMethod, privacy: .public) bucket=\(accountBucket, privacy: .public)"
+        )
+
         isDeletingAccount = true
 
         Task {
             do {
                 try await EmailAuthManager.deleteCurrentAccount()
                 await MainActor.run {
+                    AppDiagnostics.accountDeletion.debug(
+                        "deleteCurrentAccount flow backend success bucket=\(accountBucket, privacy: .public)"
+                    )
                     isDeletingAccount = false
                     completeDeletedAccountCleanup(accountID: accountID)
                 }
             } catch {
                 await MainActor.run {
+                    AppDiagnostics.accountDeletion.error(
+                        "deleteCurrentAccount flow failure bucket=\(accountBucket, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                    )
                     isDeletingAccount = false
                     deleteAccountErrorMessage = localizedAccountDeletionError(error)
                     showDeleteAccountError = true
@@ -5134,15 +5195,27 @@ struct SettingsView: View {
     }
 
     private func completeDeletedAccountCleanup(accountID: String) {
+        let accountBucket = AccountBucketHasher.bucket(for: accountID)
+        AppDiagnostics.accountDeletion.debug(
+            "deleteCurrentAccount cleanup start bucket=\(accountBucket, privacy: .public)"
+        )
+
         try? SetupProfileStore.delete(for: accountID)
+        pendingAccountDeletionNotice = L10n.text("settings.account.delete_success_message", lang: uiLanguageCode)
         baseCurrencyCode = ""
         appCountryCode = ""
         didCompleteInitialSetup = false
         clearAccountSession()
+        AppDiagnostics.accountDeletion.debug(
+            "deleteCurrentAccount cleanup reset complete bucket=\(accountBucket, privacy: .public)"
+        )
 
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             AccountScopedDataPurger.purgeArtifacts(for: accountID)
+            AppDiagnostics.accountDeletion.debug(
+                "deleteCurrentAccount cleanup purge complete bucket=\(accountBucket, privacy: .public)"
+            )
         }
     }
 
@@ -5373,6 +5446,8 @@ struct SettingsView: View {
         switch error {
         case AccountDeletionError.sessionRequired:
             return L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+        case AccountDeletionError.networkFailure:
+            return L10n.text("settings.account.delete_error_network", lang: uiLanguageCode)
         case AccountDeletionError.requestFailed:
             return L10n.text("settings.account.delete_error_failed", lang: uiLanguageCode)
         default:

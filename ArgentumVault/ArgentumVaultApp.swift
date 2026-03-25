@@ -21,6 +21,7 @@ struct ArgentumVaultApp: App {
 
 enum AppDiagnostics {
     static let accountScope = Logger(subsystem: "com.argentumvault.app", category: "AccountScope")
+    static let accountDeletion = Logger(subsystem: "com.argentumvault.app", category: "AccountDeletion")
     static let backup = Logger(subsystem: "com.argentumvault.app", category: "BackupRestore")
 }
 

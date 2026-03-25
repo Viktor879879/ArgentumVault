@@ -1,6 +1,7 @@
 import Foundation
 import Supabase
 import Auth
+import OSLog
 
 enum AppAuthMethod: String, Sendable {
     case apple
@@ -15,7 +16,8 @@ struct AppAuthSession {
 
 enum AccountDeletionError: Error {
     case sessionRequired
-    case requestFailed
+    case networkFailure
+    case requestFailed(statusCode: Int?, message: String?)
 }
 
 enum EmailAuthManager {
@@ -84,21 +86,57 @@ enum EmailAuthManager {
 
     static func deleteCurrentAccount() async throws {
         let client = try configuredClient()
+        let sessionUserID: String
 
         do {
-            _ = try await client.auth.session
+            sessionUserID = try await currentSessionUserID()
         } catch {
+            AppDiagnostics.accountDeletion.error("deleteCurrentAccount missing active session")
             throw AccountDeletionError.sessionRequired
         }
+
+        AppDiagnostics.accountDeletion.debug(
+            "deleteCurrentAccount start userID=\(sessionUserID, privacy: .public)"
+        )
 
         do {
             try await client.functions.invoke(
                 "delete-account",
                 options: .init(method: .post)
             )
-            try? await client.auth.signOut(scope: .local)
+            AppDiagnostics.accountDeletion.debug(
+                "deleteCurrentAccount edge function success userID=\(sessionUserID, privacy: .public)"
+            )
+        } catch let error as FunctionsError {
+            let failure = accountDeletionFailure(from: error)
+            AppDiagnostics.accountDeletion.error(
+                "deleteCurrentAccount edge function failure userID=\(sessionUserID, privacy: .public) statusCode=\(String(failure.statusCode ?? -1), privacy: .public) message=\(failure.message ?? error.localizedDescription, privacy: .public)"
+            )
+            throw failure.error
+        } catch is URLError {
+            AppDiagnostics.accountDeletion.error(
+                "deleteCurrentAccount network failure userID=\(sessionUserID, privacy: .public)"
+            )
+            throw AccountDeletionError.networkFailure
         } catch {
-            throw AccountDeletionError.requestFailed
+            AppDiagnostics.accountDeletion.error(
+                "deleteCurrentAccount unexpected failure userID=\(sessionUserID, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+            throw AccountDeletionError.requestFailed(
+                statusCode: nil,
+                message: error.localizedDescription
+            )
+        }
+
+        do {
+            try await client.auth.signOut(scope: .local)
+            AppDiagnostics.accountDeletion.debug(
+                "deleteCurrentAccount local signOut success userID=\(sessionUserID, privacy: .public)"
+            )
+        } catch {
+            AppDiagnostics.accountDeletion.error(
+                "deleteCurrentAccount local signOut failure userID=\(sessionUserID, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
         }
     }
 
@@ -292,6 +330,57 @@ enum EmailAuthManager {
 
         return .storageFailure
     }
+
+    private static func accountDeletionFailure(
+        from error: FunctionsError
+    ) -> (statusCode: Int?, message: String?, error: AccountDeletionError) {
+        switch error {
+        case .relayError:
+            return (
+                statusCode: nil,
+                message: error.localizedDescription,
+                error: .requestFailed(statusCode: nil, message: error.localizedDescription)
+            )
+        case .httpError(let statusCode, let data):
+            let message = decodedFunctionErrorMessage(from: data)
+            if statusCode == 401 || statusCode == 403 {
+                return (
+                    statusCode: statusCode,
+                    message: message,
+                    error: .sessionRequired
+                )
+            }
+            return (
+                statusCode: statusCode,
+                message: message,
+                error: .requestFailed(statusCode: statusCode, message: message)
+            )
+        }
+    }
+
+    private static func decodedFunctionErrorMessage(from data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+
+        if let payload = try? JSONDecoder().decode(EdgeFunctionErrorPayload.self, from: data) {
+            let candidate = (payload.message ?? payload.error)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let candidate, !candidate.isEmpty {
+                return candidate
+            }
+        }
+
+        if let fallback = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !fallback.isEmpty {
+            return fallback
+        }
+
+        return nil
+    }
+}
+
+private struct EdgeFunctionErrorPayload: Decodable {
+    let error: String?
+    let message: String?
 }
 
 private enum SupabaseConfiguration {
