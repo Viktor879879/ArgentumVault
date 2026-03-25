@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import SwiftData
 
@@ -25,7 +24,7 @@ enum AccountScopedDataPurger {
     }
 
     private static func purgeStoreArtifacts(prefix: String, accountIdentifier: String) {
-        let storeName = "\(prefix)-\(accountBucket(accountIdentifier))"
+        let storeName = "\(prefix)-\(AccountBucketHasher.bucket(for: accountIdentifier))"
         let configuration = ModelConfiguration(
             storeName,
             schema: schema,
@@ -40,10 +39,5 @@ enum AccountScopedDataPurger {
         for candidate in [primaryURL, walURL, shmURL] where fileManager.fileExists(atPath: candidate.path) {
             try? fileManager.removeItem(at: candidate)
         }
-    }
-
-    private static func accountBucket(_ accountIdentifier: String) -> String {
-        let digest = SHA256.hash(data: Data(accountIdentifier.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined().prefix(24).lowercased()
     }
 }

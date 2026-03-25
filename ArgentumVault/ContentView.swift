@@ -105,7 +105,12 @@ struct ContentView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier != nil
     }
     
     var body: some View {
@@ -187,13 +192,12 @@ struct ContentView: View {
                 didCompleteInitialSetup = true
             }
             if authMethod.isEmpty {
-                if !appleUserID.isEmpty {
-                    authMethod = "apple"
-                } else if !emailUserEmail.isEmpty {
-                    authMethod = "email"
-                } else if !appleUserID.isEmpty {
-                    authMethod = "apple"
-                }
+                authMethod = AccountScopeSnapshot(
+                    appleUserID: appleUserID,
+                    emailUserEmail: emailUserEmail,
+                    emailUserID: emailUserID,
+                    authMethod: authMethod
+                ).inferredAuthMethodRawValue ?? ""
             }
             if appCountryCode.isEmpty {
                 appCountryCode = CountryCatalog.defaultCountryCode()
@@ -412,7 +416,12 @@ struct FirstLaunchSetupView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier != nil
     }
 
     var body: some View {
@@ -667,29 +676,22 @@ struct FirstLaunchSetupView: View {
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
         isAppleAuthInProgress = false
-        appleUserID = credential.user
-        emailUserID = session.userID
-        emailUserEmail = session.email
-        authMethod = session.authMethod.rawValue
 
         let resolvedAppleEmail = (credential.email ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !resolvedAppleEmail.isEmpty {
-            appleUserEmail = resolvedAppleEmail
-        } else if !session.email.isEmpty {
-            appleUserEmail = session.email
-        }
-
         let given = credential.fullName?.givenName ?? ""
         let family = credential.fullName?.familyName ?? ""
         let fullName = [given, family]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        if !fullName.isEmpty {
-            appleUserName = fullName
-        }
-
-        SessionEvents.postAccountSessionDidChange()
+        let storedAppleEmail = !resolvedAppleEmail.isEmpty ? resolvedAppleEmail : session.email
+        AccountSessionDefaults.persistAppleSession(
+            session,
+            appleUserID: credential.user,
+            appleUserEmail: storedAppleEmail,
+            appleUserName: fullName,
+            postChangeNotification: true
+        )
         triggerProRestoreAfterAuthorization()
         if let accountID = currentSetupAccountID(),
            restoreSetupProfileIfPresent(for: accountID) {
@@ -699,13 +701,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
-        appleUserID = ""
-        appleUserEmail = ""
-        appleUserName = ""
-        emailUserEmail = session.email
-        emailUserID = session.userID
-        authMethod = session.authMethod.rawValue
-        SessionEvents.postAccountSessionDidChange()
+        AccountSessionDefaults.persistEmailSession(session, postChangeNotification: true)
         triggerProRestoreAfterAuthorization()
         if let accountID = SetupProfileStore.emailAccountID(session.email, userID: session.userID),
            restoreSetupProfileIfPresent(for: accountID) {
@@ -774,18 +770,12 @@ struct FirstLaunchSetupView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {
@@ -4426,7 +4416,12 @@ struct SettingsView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier != nil
     }
     
     var body: some View {
@@ -5054,29 +5049,22 @@ struct SettingsView: View {
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
         isAppleAuthInProgress = false
-        appleUserID = credential.user
-        emailUserID = session.userID
-        emailUserEmail = session.email
-        authMethod = session.authMethod.rawValue
 
         let resolvedAppleEmail = (credential.email ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !resolvedAppleEmail.isEmpty {
-            appleUserEmail = resolvedAppleEmail
-        } else if !session.email.isEmpty {
-            appleUserEmail = session.email
-        }
-
         let given = credential.fullName?.givenName ?? ""
         let family = credential.fullName?.familyName ?? ""
         let fullName = [given, family]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        if !fullName.isEmpty {
-            appleUserName = fullName
-        }
-
-        SessionEvents.postAccountSessionDidChange()
+        let storedAppleEmail = !resolvedAppleEmail.isEmpty ? resolvedAppleEmail : session.email
+        AccountSessionDefaults.persistAppleSession(
+            session,
+            appleUserID: credential.user,
+            appleUserEmail: storedAppleEmail,
+            appleUserName: fullName,
+            postChangeNotification: true
+        )
         triggerProRestoreAfterAuthorization()
         persistSetupProfileIfPossible()
 #if DEBUG
@@ -5106,13 +5094,7 @@ struct SettingsView: View {
     }
 
     private func clearAccountSession() {
-        appleUserID = ""
-        appleUserEmail = ""
-        appleUserName = ""
-        emailUserEmail = ""
-        emailUserID = ""
-        authMethod = ""
-        SessionEvents.postAccountSessionDidChange()
+        AccountSessionDefaults.clearSession(postChangeNotification: true)
     }
 
     private func signOutCurrentAccount() {
@@ -5165,13 +5147,7 @@ struct SettingsView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
-        appleUserID = ""
-        appleUserEmail = ""
-        appleUserName = ""
-        emailUserEmail = session.email
-        emailUserID = session.userID
-        authMethod = session.authMethod.rawValue
-        SessionEvents.postAccountSessionDidChange()
+        AccountSessionDefaults.persistEmailSession(session, postChangeNotification: true)
         triggerProRestoreAfterAuthorization()
         persistSetupProfileIfPossible()
 #if DEBUG
@@ -5187,18 +5163,12 @@ struct SettingsView: View {
 
 #if DEBUG
     private var currentBackupAccountIdentifier: String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).resolvedScope(allowLegacyEmailStoreFallback: true).cloudBackupAccountIdentifier
     }
 
     private func refreshCloudDebugStatus() {
@@ -5318,18 +5288,12 @@ struct SettingsView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {

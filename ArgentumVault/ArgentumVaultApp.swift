@@ -8,12 +8,303 @@
 import SwiftUI
 import SwiftData
 import CryptoKit
+import OSLog
 
 @main
 struct ArgentumVaultApp: App {
     var body: some Scene {
         WindowGroup {
             AppBootstrapView()
+        }
+    }
+}
+
+enum AppDiagnostics {
+    static let accountScope = Logger(subsystem: "com.argentumvault.app", category: "AccountScope")
+    static let backup = Logger(subsystem: "com.argentumvault.app", category: "BackupRestore")
+}
+
+enum AccountBucketHasher {
+    static func bucket(for accountIdentifier: String?) -> String {
+        guard let accountIdentifier else { return "guest" }
+        let normalized = accountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return "guest" }
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(24).lowercased()
+    }
+}
+
+struct AccountScopeSnapshot {
+    private static let appleUserIDKey = "appleUserID"
+    private static let emailUserEmailKey = "emailUserEmail"
+    private static let emailUserIDKey = "emailUserID"
+    private static let authMethodKey = "authMethod"
+
+    let appleUserID: String
+    let emailUserEmail: String
+    let emailUserID: String
+    let authMethod: String
+
+    init(
+        appleUserID: String,
+        emailUserEmail: String,
+        emailUserID: String,
+        authMethod: String
+    ) {
+        self.appleUserID = appleUserID.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.emailUserEmail = emailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.emailUserID = emailUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        self.authMethod = authMethod.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    init(defaults: UserDefaults = .standard) {
+        self.init(
+            appleUserID: defaults.string(forKey: Self.appleUserIDKey) ?? "",
+            emailUserEmail: defaults.string(forKey: Self.emailUserEmailKey) ?? "",
+            emailUserID: defaults.string(forKey: Self.emailUserIDKey) ?? "",
+            authMethod: defaults.string(forKey: Self.authMethodKey) ?? ""
+        )
+    }
+
+    var declaredAuthMethod: AppAuthMethod? {
+        AppAuthMethod(rawValue: authMethod)
+    }
+
+    var inferredAuthMethod: AppAuthMethod? {
+        if !appleUserID.isEmpty {
+            return .apple
+        }
+        if !emailUserID.isEmpty || !emailUserEmail.isEmpty {
+            return .email
+        }
+        return nil
+    }
+
+    var effectiveAuthMethod: AppAuthMethod? {
+        declaredAuthMethod ?? inferredAuthMethod
+    }
+
+    var appleAccountIdentifier: String? {
+        guard !appleUserID.isEmpty else { return nil }
+        return "apple:\(appleUserID)"
+    }
+
+    var canonicalEmailAccountIdentifier: String? {
+        guard !emailUserID.isEmpty else { return nil }
+        return "email_uid:\(emailUserID)"
+    }
+
+    var legacyEmailAccountIdentifier: String? {
+        guard !emailUserEmail.isEmpty else { return nil }
+        return "email:\(emailUserEmail)"
+    }
+
+    var inferredAuthMethodRawValue: String? {
+        effectiveAuthMethod?.rawValue
+    }
+
+    var hasAnyAuthSignals: Bool {
+        !appleUserID.isEmpty || !emailUserEmail.isEmpty || !emailUserID.isEmpty || effectiveAuthMethod != nil
+    }
+
+    func resolvedScope(allowLegacyEmailStoreFallback: Bool) -> ResolvedAccountScope {
+        let canonicalEmailAccountIdentifier = canonicalEmailAccountIdentifier
+        let legacyEmailAccountIdentifier = legacyEmailAccountIdentifier
+        let effectiveAuthMethod = effectiveAuthMethod
+
+        let primaryStoreAccountIdentifier: String?
+        let primaryCloudBackupAccountIdentifier: String?
+
+        switch effectiveAuthMethod {
+        case .apple:
+            primaryStoreAccountIdentifier = appleAccountIdentifier ?? canonicalEmailAccountIdentifier
+            primaryCloudBackupAccountIdentifier = appleAccountIdentifier ?? canonicalEmailAccountIdentifier
+        case .email:
+            primaryStoreAccountIdentifier = canonicalEmailAccountIdentifier
+            primaryCloudBackupAccountIdentifier = canonicalEmailAccountIdentifier
+        case nil:
+            primaryStoreAccountIdentifier = appleAccountIdentifier ?? canonicalEmailAccountIdentifier
+            primaryCloudBackupAccountIdentifier = appleAccountIdentifier ?? canonicalEmailAccountIdentifier
+        }
+
+        let storeAccountIdentifier: String?
+        let usesLegacyEmailStoreFallback: Bool
+        if let primaryStoreAccountIdentifier {
+            storeAccountIdentifier = primaryStoreAccountIdentifier
+            usesLegacyEmailStoreFallback = false
+        } else if allowLegacyEmailStoreFallback, let legacyEmailAccountIdentifier {
+            storeAccountIdentifier = legacyEmailAccountIdentifier
+            usesLegacyEmailStoreFallback = true
+        } else {
+            storeAccountIdentifier = nil
+            usesLegacyEmailStoreFallback = false
+        }
+
+        let needsBootstrapStabilization = hasAnyAuthSignals
+            && storeAccountIdentifier == nil
+            && legacyEmailAccountIdentifier != nil
+
+        return ResolvedAccountScope(
+            snapshot: self,
+            storeAccountIdentifier: storeAccountIdentifier,
+            cloudBackupAccountIdentifier: primaryCloudBackupAccountIdentifier,
+            canonicalEmailAccountIdentifier: canonicalEmailAccountIdentifier,
+            legacyEmailAccountIdentifier: legacyEmailAccountIdentifier,
+            usesLegacyEmailStoreFallback: usesLegacyEmailStoreFallback,
+            needsBootstrapStabilization: needsBootstrapStabilization
+        )
+    }
+}
+
+struct ResolvedAccountScope {
+    let snapshot: AccountScopeSnapshot
+    let storeAccountIdentifier: String?
+    let cloudBackupAccountIdentifier: String?
+    let canonicalEmailAccountIdentifier: String?
+    let legacyEmailAccountIdentifier: String?
+    let usesLegacyEmailStoreFallback: Bool
+    let needsBootstrapStabilization: Bool
+
+    var shouldRequestCloudBackup: Bool {
+        cloudBackupAccountIdentifier != nil
+    }
+
+    var storeBucket: String {
+        AccountBucketHasher.bucket(for: storeAccountIdentifier)
+    }
+
+    var cloudBackupBucket: String? {
+        cloudBackupAccountIdentifier.map { AccountBucketHasher.bucket(for: $0) }
+    }
+
+    var debugSummary: String {
+        [
+            "authMethod=\(snapshot.effectiveAuthMethod?.rawValue ?? "none")",
+            "appleUserID=\(snapshot.appleUserID)",
+            "emailUserEmail=\(snapshot.emailUserEmail)",
+            "emailUserID=\(snapshot.emailUserID)",
+            "storeAccountIdentifier=\(storeAccountIdentifier ?? "nil")",
+            "cloudBackupAccountIdentifier=\(cloudBackupAccountIdentifier ?? "nil")",
+            "storeBucket=\(storeBucket)",
+            "cloudBackupBucket=\(cloudBackupBucket ?? "nil")",
+            "legacyEmailFallback=\(usesLegacyEmailStoreFallback)",
+            "needsBootstrapStabilization=\(needsBootstrapStabilization)"
+        ].joined(separator: " ")
+    }
+}
+
+enum AccountSessionDefaults {
+    private static let appleUserIDKey = "appleUserID"
+    private static let appleUserEmailKey = "appleUserEmail"
+    private static let appleUserNameKey = "appleUserName"
+    private static let emailUserEmailKey = "emailUserEmail"
+    private static let emailUserIDKey = "emailUserID"
+    private static let authMethodKey = "authMethod"
+
+    static func applyRestoredSession(_ session: AppAuthSession) {
+        let defaults = UserDefaults.standard
+        switch session.authMethod {
+        case .apple:
+            setEmailUserID(session.userID, in: defaults)
+            setEmailUserEmail(session.email, in: defaults)
+            defaults.set(AppAuthMethod.apple.rawValue, forKey: authMethodKey)
+        case .email:
+            clearStoredAppleIdentity(in: defaults)
+            setEmailUserID(session.userID, in: defaults)
+            setEmailUserEmail(session.email, in: defaults)
+            defaults.set(AppAuthMethod.email.rawValue, forKey: authMethodKey)
+        }
+    }
+
+    static func persistAppleSession(
+        _ session: AppAuthSession,
+        appleUserID: String,
+        appleUserEmail: String,
+        appleUserName: String,
+        postChangeNotification: Bool
+    ) {
+        let defaults = UserDefaults.standard
+        setAppleUserID(appleUserID, in: defaults)
+        setAppleUserEmail(appleUserEmail, in: defaults)
+        setAppleUserName(appleUserName, in: defaults)
+        setEmailUserID(session.userID, in: defaults)
+        setEmailUserEmail(session.email, in: defaults)
+        defaults.set(AppAuthMethod.apple.rawValue, forKey: authMethodKey)
+        if postChangeNotification {
+            SessionEvents.postAccountSessionDidChange()
+        }
+    }
+
+    static func persistEmailSession(_ session: AppAuthSession, postChangeNotification: Bool) {
+        let defaults = UserDefaults.standard
+        clearStoredAppleIdentity(in: defaults)
+        setEmailUserID(session.userID, in: defaults)
+        setEmailUserEmail(session.email, in: defaults)
+        defaults.set(AppAuthMethod.email.rawValue, forKey: authMethodKey)
+        if postChangeNotification {
+            SessionEvents.postAccountSessionDidChange()
+        }
+    }
+
+    static func clearSession(postChangeNotification: Bool) {
+        let defaults = UserDefaults.standard
+        clearStoredAppleIdentity(in: defaults)
+        defaults.removeObject(forKey: emailUserEmailKey)
+        defaults.removeObject(forKey: emailUserIDKey)
+        defaults.removeObject(forKey: authMethodKey)
+        if postChangeNotification {
+            SessionEvents.postAccountSessionDidChange()
+        }
+    }
+
+    private static func clearStoredAppleIdentity(in defaults: UserDefaults) {
+        defaults.removeObject(forKey: appleUserIDKey)
+        defaults.removeObject(forKey: appleUserEmailKey)
+        defaults.removeObject(forKey: appleUserNameKey)
+    }
+
+    private static func setAppleUserID(_ value: String, in defaults: UserDefaults) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty {
+            defaults.removeObject(forKey: appleUserIDKey)
+        } else {
+            defaults.set(normalized, forKey: appleUserIDKey)
+        }
+    }
+
+    private static func setAppleUserEmail(_ value: String, in defaults: UserDefaults) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty {
+            defaults.removeObject(forKey: appleUserEmailKey)
+        } else {
+            defaults.set(normalized, forKey: appleUserEmailKey)
+        }
+    }
+
+    private static func setAppleUserName(_ value: String, in defaults: UserDefaults) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty {
+            defaults.removeObject(forKey: appleUserNameKey)
+        } else {
+            defaults.set(normalized, forKey: appleUserNameKey)
+        }
+    }
+
+    private static func setEmailUserEmail(_ value: String, in defaults: UserDefaults) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty {
+            defaults.removeObject(forKey: emailUserEmailKey)
+        } else {
+            defaults.set(normalized, forKey: emailUserEmailKey)
+        }
+    }
+
+    private static func setEmailUserID(_ value: String, in defaults: UserDefaults) {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty {
+            defaults.removeObject(forKey: emailUserIDKey)
+        } else {
+            defaults.set(normalized, forKey: emailUserIDKey)
         }
     }
 }
@@ -27,6 +318,8 @@ private struct AppBootstrapView: View {
     @StateObject private var quickExpenseRouter = QuickExpenseRouter()
     @State private var modelContainer: ModelContainer?
     @State private var isCloudStoreEnabled = false
+    @State private var isAuthBootstrapComplete = false
+    @State private var hasResolvedAccountScope = false
     @State private var isReconfiguringContainer = false
     @State private var isSwitchingContainer = false
     @State private var cloudRetryTask: Task<Void, Never>?
@@ -41,7 +334,7 @@ private struct AppBootstrapView: View {
 
     var body: some View {
         Group {
-            if !isSwitchingContainer, let modelContainer {
+            if isAuthBootstrapComplete, hasResolvedAccountScope, !isSwitchingContainer, let modelContainer {
                 ContentView()
                     .id(containerEpoch)
                     .modelContainer(modelContainer)
@@ -59,10 +352,6 @@ private struct AppBootstrapView: View {
             NotificationCenter.default.publisher(for: ModelContext.didSave),
             perform: handleModelContextSaveNotification
         )
-        .onChange(of: bootstrapAppleUserID, perform: handleBootstrapAppleIDChange)
-        .onChange(of: bootstrapEmailUserEmail, perform: handleBootstrapEmailChange)
-        .onChange(of: bootstrapEmailUserID, perform: handleBootstrapEmailUserIDChange)
-        .onChange(of: bootstrapAuthMethod, perform: handleBootstrapAuthMethodChange)
         .onReceive(
             NotificationCenter.default.publisher(for: .accountSessionDidChange),
             perform: handleAccountSessionChangeNotification
@@ -75,62 +364,94 @@ private struct AppBootstrapView: View {
             NotificationCenter.default.publisher(for: .modelStoreDidRestore),
             perform: handleModelStoreRestoreDidFinishNotification
         )
-        .onChange(of: scenePhase, perform: handleScenePhaseChange)
+        .onChange(of: scenePhase) { _, newPhase in
+            handleScenePhaseChange(newPhase)
+        }
         .environmentObject(quickExpenseRouter)
     }
 
     @MainActor
     private func bootstrapIfNeeded() async {
         guard modelContainer == nil else { return }
+        isSwitchingContainer = true
+        hasResolvedAccountScope = false
 
-        let normalizedAppleID = bootstrapAppleUserID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedEmail = bootstrapEmailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let normalizedEmailUserID = bootstrapEmailUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if (normalizedEmail.isEmpty || normalizedEmailUserID.isEmpty),
-           let restoredSession = await EmailAuthManager.restoreSession() {
-            if !restoredSession.email.isEmpty {
-                bootstrapEmailUserEmail = restoredSession.email
+        let initialScope = currentResolvedAccountScope(allowLegacyEmailStoreFallback: false)
+        AppDiagnostics.accountScope.debug("bootstrap begin \(initialScope.debugSummary, privacy: .public)")
+
+        if initialScope.needsBootstrapStabilization {
+            AppDiagnostics.accountScope.debug("bootstrap restoreSession start \(initialScope.debugSummary, privacy: .public)")
+            if let restoredSession = await EmailAuthManager.restoreSession() {
+                AccountSessionDefaults.applyRestoredSession(restoredSession)
+                AppDiagnostics.accountScope.debug(
+                    "bootstrap restoreSession resolved method=\(restoredSession.authMethod.rawValue, privacy: .public) email=\(restoredSession.email, privacy: .public) userID=\(restoredSession.userID, privacy: .public)"
+                )
+            } else {
+                AppDiagnostics.accountScope.debug("bootstrap restoreSession returned nil")
             }
-            bootstrapEmailUserID = restoredSession.userID
-            bootstrapAuthMethod = restoredSession.authMethod.rawValue
-        } else if bootstrapAuthMethod.isEmpty {
-            if !normalizedAppleID.isEmpty {
-                bootstrapAuthMethod = "apple"
-            } else if !normalizedEmail.isEmpty {
-                bootstrapAuthMethod = "email"
-            }
-        } else if bootstrapAuthMethod == "apple", normalizedAppleID.isEmpty, !normalizedEmail.isEmpty {
-            // Recover gracefully if Apple provider state was partially reset but the account session is still valid.
-            bootstrapAuthMethod = "apple"
+        } else if bootstrapAuthMethod.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let inferredAuthMethod = currentResolvedAccountScope(
+                    allowLegacyEmailStoreFallback: false
+                  ).snapshot.inferredAuthMethodRawValue {
+            bootstrapAuthMethod = inferredAuthMethod
         }
 
-        await switchContainerIfNeeded(refreshEntitlements: true)
+        isAuthBootstrapComplete = true
+        let stabilizedScope = currentResolvedAccountScope(allowLegacyEmailStoreFallback: true)
+        AppDiagnostics.accountScope.debug("bootstrap stabilized \(stabilizedScope.debugSummary, privacy: .public)")
+
+        await switchContainerIfNeeded(
+            refreshEntitlements: true,
+            reason: "bootstrap_complete"
+        )
         guard modelContainer == nil else { return }
 
         // Emergency fallback: never leave bootstrap screen hanging.
-        let accountIdentifier = StorageModePolicy.currentAccountIdentifier()
+        let accountIdentifier = stabilizedScope.storeAccountIdentifier
         let fallbackSelection = AppModelContainerFactory.makeContainerSelection(
             shouldUseCloudKit: false,
             accountIdentifier: accountIdentifier
         )
         modelContainer = fallbackSelection.container
         isCloudStoreEnabled = false
+        hasResolvedAccountScope = true
         activeStoreAccountIdentifier = accountIdentifier
         isSwitchingContainer = false
         AppStorageDiagnostics.persist(
-            requestedCloud: StorageModePolicy.shouldRequestCloudKitStorage(),
+            requestedCloud: stabilizedScope.shouldRequestCloudBackup,
             selection: fallbackSelection
         )
         configureICloudBackupPipeline(
             requestedCloud: false,
             usesCloudKit: false,
-            container: fallbackSelection.container
+            container: fallbackSelection.container,
+            accountIdentifier: nil
+        )
+        AppDiagnostics.accountScope.debug(
+            "bootstrap emergency fallback store=\(fallbackSelection.storeName, privacy: .public) bucket=\(fallbackSelection.accountBucket, privacy: .public)"
         )
     }
 
-    private func scheduleContainerSwitch(refreshEntitlements: Bool) {
+    private func scheduleContainerSwitch(refreshEntitlements: Bool, reason: String) {
+        guard isAuthBootstrapComplete else {
+            AppDiagnostics.accountScope.debug("scheduleContainerSwitch ignored reason=\(reason, privacy: .public) bootstrap incomplete")
+            return
+        }
+        let scope = currentResolvedAccountScope(allowLegacyEmailStoreFallback: true)
+        guard !scope.needsBootstrapStabilization else {
+            AppDiagnostics.accountScope.debug(
+                "scheduleContainerSwitch deferred reason=\(reason, privacy: .public) \(scope.debugSummary, privacy: .public)"
+            )
+            return
+        }
+        AppDiagnostics.accountScope.debug(
+            "scheduleContainerSwitch reason=\(reason, privacy: .public) refreshEntitlements=\(refreshEntitlements) \(scope.debugSummary, privacy: .public)"
+        )
         Task { @MainActor in
-            await switchContainerIfNeeded(refreshEntitlements: refreshEntitlements)
+            await switchContainerIfNeeded(
+                refreshEntitlements: refreshEntitlements,
+                reason: reason
+            )
         }
     }
 
@@ -140,24 +461,8 @@ private struct AppBootstrapView: View {
         }
     }
 
-    private func handleBootstrapAppleIDChange(_: String) {
-        scheduleContainerSwitch(refreshEntitlements: false)
-    }
-
-    private func handleBootstrapEmailChange(_: String) {
-        scheduleContainerSwitch(refreshEntitlements: false)
-    }
-
-    private func handleBootstrapEmailUserIDChange(_: String) {
-        scheduleContainerSwitch(refreshEntitlements: false)
-    }
-
-    private func handleBootstrapAuthMethodChange(_: String) {
-        scheduleContainerSwitch(refreshEntitlements: false)
-    }
-
     private func handleAccountSessionChangeNotification(_: Notification) {
-        scheduleContainerSwitch(refreshEntitlements: false)
+        scheduleContainerSwitch(refreshEntitlements: false, reason: "account_session_changed")
     }
 
     private func handleModelStoreRestoreWillBeginNotification(_: Notification) {
@@ -171,7 +476,10 @@ private struct AppBootstrapView: View {
     private func handleScenePhaseChange(_ newPhase: ScenePhase) {
         Task { @MainActor in
             if newPhase == .active {
-                await switchContainerIfNeeded(refreshEntitlements: true)
+                await switchContainerIfNeeded(
+                    refreshEntitlements: true,
+                    reason: "scene_active"
+                )
             } else if newPhase == .inactive || newPhase == .background {
                 performImmediateBackupIfPossible(force: true)
             }
@@ -181,11 +489,15 @@ private struct AppBootstrapView: View {
     @MainActor
     private func switchContainerIfNeeded(
         refreshEntitlements: Bool,
-        forceRebuild: Bool = false
+        forceRebuild: Bool = false,
+        reason: String
     ) async {
         guard !isReconfiguringContainer else {
             hasPendingReconfigureRequest = true
             pendingReconfigureNeedsEntitlementRefresh = pendingReconfigureNeedsEntitlementRefresh || refreshEntitlements
+            AppDiagnostics.accountScope.debug(
+                "switchContainerIfNeeded queued reason=\(reason, privacy: .public) refreshEntitlements=\(refreshEntitlements) forceRebuild=\(forceRebuild)"
+            )
             return
         }
         isReconfiguringContainer = true
@@ -198,7 +510,10 @@ private struct AppBootstrapView: View {
                 hasPendingReconfigureRequest = false
                 pendingReconfigureNeedsEntitlementRefresh = false
                 Task { @MainActor in
-                    await switchContainerIfNeeded(refreshEntitlements: needsRefresh)
+                    await switchContainerIfNeeded(
+                        refreshEntitlements: needsRefresh,
+                        reason: "pending_reconfigure"
+                    )
                 }
             }
         }
@@ -212,8 +527,21 @@ private struct AppBootstrapView: View {
         // Main SwiftData store is local and account-scoped.
         // Remote sync/backup is handled separately (Supabase for email accounts).
         let resolvedShouldUseCloudKit = false
-        let resolvedShouldEnableCloudBackup = StorageModePolicy.shouldRequestCloudKitStorage()
-        let resolvedAccountIdentifier = StorageModePolicy.currentAccountIdentifier()
+        let resolvedScope = currentResolvedAccountScope(
+            allowLegacyEmailStoreFallback: isAuthBootstrapComplete
+        )
+        guard !resolvedScope.needsBootstrapStabilization else {
+            AppDiagnostics.accountScope.debug(
+                "switchContainerIfNeeded aborted reason=\(reason, privacy: .public) unresolved scope \(resolvedScope.debugSummary, privacy: .public)"
+            )
+            return
+        }
+        let resolvedShouldEnableCloudBackup = resolvedScope.shouldRequestCloudBackup
+        let resolvedAccountIdentifier = resolvedScope.storeAccountIdentifier
+        let resolvedCloudBackupAccountIdentifier = resolvedScope.cloudBackupAccountIdentifier
+        AppDiagnostics.accountScope.debug(
+            "switchContainerIfNeeded begin reason=\(reason, privacy: .public) refreshEntitlements=\(refreshEntitlements) forceRebuild=\(forceRebuild) \(resolvedScope.debugSummary, privacy: .public)"
+        )
 
         if !forceRebuild,
            let existingContainer = modelContainer,
@@ -222,8 +550,10 @@ private struct AppBootstrapView: View {
             configureICloudBackupPipeline(
                 requestedCloud: resolvedShouldEnableCloudBackup,
                 usesCloudKit: isCloudStoreEnabled,
-                container: existingContainer
+                container: existingContainer,
+                accountIdentifier: resolvedCloudBackupAccountIdentifier
             )
+            hasResolvedAccountScope = true
             return
         }
 
@@ -234,6 +564,10 @@ private struct AppBootstrapView: View {
         let selection = AppModelContainerFactory.makeContainerSelection(
             shouldUseCloudKit: false,
             accountIdentifier: resolvedAccountIdentifier
+        )
+        let didMigrateLegacyEmailStore = migrateLegacyEmailScopedLocalStoreIfNeeded(
+            into: selection.container,
+            resolvedScope: resolvedScope
         )
 
         if !forceRebuild,
@@ -247,8 +581,10 @@ private struct AppBootstrapView: View {
             configureICloudBackupPipeline(
                 requestedCloud: resolvedShouldEnableCloudBackup,
                 usesCloudKit: previousUsesCloudStore,
-                container: previousContainer
+                container: previousContainer,
+                accountIdentifier: resolvedCloudBackupAccountIdentifier
             )
+            hasResolvedAccountScope = true
             return
         }
 
@@ -261,8 +597,12 @@ private struct AppBootstrapView: View {
 
         let shouldGateInitialPresentation = previousContainer == nil
             && resolvedShouldEnableCloudBackup
-            && resolvedAccountIdentifier != nil
+            && resolvedCloudBackupAccountIdentifier != nil
             && !ICloudBackupManager.hasCoreFinancialData(in: ModelContext(selection.container))
+
+        AppDiagnostics.accountScope.debug(
+            "container selection reason=\(reason, privacy: .public) storeName=\(selection.storeName, privacy: .public) bucket=\(selection.accountBucket, privacy: .public) requestedCloud=\(resolvedShouldEnableCloudBackup) didMigrateLegacyEmailStore=\(didMigrateLegacyEmailStore) gateInitialPresentation=\(shouldGateInitialPresentation)"
+        )
 
         if shouldSwitchStoreType {
             periodicBackupTask?.cancel()
@@ -309,8 +649,10 @@ private struct AppBootstrapView: View {
         configureICloudBackupPipeline(
             requestedCloud: resolvedShouldEnableCloudBackup,
             usesCloudKit: selection.usesCloudKit,
-            container: selection.container
+            container: selection.container,
+            accountIdentifier: resolvedCloudBackupAccountIdentifier
         )
+        hasResolvedAccountScope = true
     }
 
     @MainActor
@@ -325,18 +667,23 @@ private struct AppBootstrapView: View {
     private func configureICloudBackupPipeline(
         requestedCloud: Bool,
         usesCloudKit: Bool,
-        container: ModelContainer
+        container: ModelContainer,
+        accountIdentifier: String?
     ) {
         startupBackupTask?.cancel()
         startupBackupTask = nil
         periodicBackupTask?.cancel()
         periodicBackupTask = nil
 
-        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
+        guard requestedCloud, let accountIdentifier else {
             lastKnownAccountIdentifier = nil
+            AppDiagnostics.accountScope.debug("configureICloudBackupPipeline disabled requestedCloud=\(requestedCloud)")
             return
         }
         lastKnownAccountIdentifier = accountIdentifier
+        AppDiagnostics.accountScope.debug(
+            "configureICloudBackupPipeline accountIdentifier=\(accountIdentifier, privacy: .public) bucket=\(AccountBucketHasher.bucket(for: accountIdentifier), privacy: .public) usesCloudKit=\(usesCloudKit)"
+        )
 
         startupBackupTask = Task { @MainActor [container] in
             let startupDelay: UInt64 = usesCloudKit ? 10_000_000_000 : 350_000_000
@@ -367,7 +714,11 @@ private struct AppBootstrapView: View {
                 return
             }
             if didRestore {
-                await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+                await switchContainerIfNeeded(
+                    refreshEntitlements: false,
+                    forceRebuild: true,
+                    reason: "startup_restore_rebuild"
+                )
                 return
             }
 
@@ -419,7 +770,11 @@ private struct AppBootstrapView: View {
                     continue
                 }
                 if didRestore {
-                    await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+                    await switchContainerIfNeeded(
+                        refreshEntitlements: false,
+                        forceRebuild: true,
+                        reason: "periodic_restore_rebuild"
+                    )
                     continue
                 }
                 let backupContext = ModelContext(container)
@@ -441,6 +796,7 @@ private struct AppBootstrapView: View {
     private func handleModelContextDidSave(_ notification: Notification) {
         guard notification.object is ModelContext else { return }
         guard modelContainer != nil else { return }
+        guard isAuthBootstrapComplete, hasResolvedAccountScope else { return }
         guard let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else { return }
         guard !isSwitchingContainer else { return }
         guard !ICloudBackupManager.consumeIgnoredSaveEventIfNeeded(accountIdentifier: accountIdentifier) else {
@@ -469,7 +825,11 @@ private struct AppBootstrapView: View {
         let didRestore = (notification.userInfo?["restored"] as? Bool) ?? true
         if didRestore {
             Task { @MainActor in
-                await switchContainerIfNeeded(refreshEntitlements: false, forceRebuild: true)
+                await switchContainerIfNeeded(
+                    refreshEntitlements: false,
+                    forceRebuild: true,
+                    reason: "model_store_restore_notification"
+                )
             }
             return
         }
@@ -549,6 +909,54 @@ private struct AppBootstrapView: View {
             try? await Task.sleep(nanoseconds: 700_000_000)
         }
     }
+
+    private func currentResolvedAccountScope(allowLegacyEmailStoreFallback: Bool) -> ResolvedAccountScope {
+        StorageModePolicy.resolveAccountScope(
+            allowLegacyEmailStoreFallback: allowLegacyEmailStoreFallback
+        )
+    }
+
+    @MainActor
+    private func migrateLegacyEmailScopedLocalStoreIfNeeded(
+        into destination: ModelContainer,
+        resolvedScope: ResolvedAccountScope
+    ) -> Bool {
+        guard let canonicalEmailAccountIdentifier = resolvedScope.canonicalEmailAccountIdentifier,
+              let legacyEmailAccountIdentifier = resolvedScope.legacyEmailAccountIdentifier,
+              resolvedScope.storeAccountIdentifier == canonicalEmailAccountIdentifier,
+              canonicalEmailAccountIdentifier != legacyEmailAccountIdentifier
+        else {
+            return false
+        }
+
+        let destinationContext = ModelContext(destination)
+        guard !ICloudBackupManager.hasCoreFinancialData(in: destinationContext) else {
+            return false
+        }
+
+        do {
+            let legacyContainer = try AppModelContainerFactory.makeCurrentLocalContainerForMigration(
+                accountIdentifier: legacyEmailAccountIdentifier
+            )
+            let legacyContext = ModelContext(legacyContainer)
+            guard ICloudBackupManager.hasCoreFinancialData(in: legacyContext) else {
+                return false
+            }
+            try DataStoreMigrator.migrateLocalSnapshotToCloudIfNeeded(
+                from: legacyContainer,
+                to: destination
+            )
+            AppDiagnostics.accountScope.debug(
+                "migrated legacy local email store legacyIdentifier=\(legacyEmailAccountIdentifier, privacy: .public) canonicalIdentifier=\(canonicalEmailAccountIdentifier, privacy: .public)"
+            )
+            return true
+        } catch {
+            AppDiagnostics.accountScope.error(
+                "failed to migrate legacy local email store canonicalIdentifier=\(canonicalEmailAccountIdentifier, privacy: .public) error=\(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
+    }
 }
 
 private struct LoadingBootstrapView: View {
@@ -574,6 +982,9 @@ private struct AppModelContainerSelection {
     let usesCloudKit: Bool
     let cloudKitErrorDescription: String?
     let cloudKitFailureReasonCode: String?
+    let storeName: String
+    let accountBucket: String
+    let accountIdentifier: String?
 }
 
 private enum AppModelContainerFactory {
@@ -594,6 +1005,7 @@ private enum AppModelContainerFactory {
         shouldUseCloudKit: Bool,
         accountIdentifier: String?
     ) -> AppModelContainerSelection {
+        let accountBucket = AccountBucketHasher.bucket(for: accountIdentifier)
         let scopedLocalStoreName = scopedStoreName(
             prefix: localStoreNamePrefix,
             accountIdentifier: accountIdentifier
@@ -615,7 +1027,10 @@ private enum AppModelContainerFactory {
                 container: container,
                 usesCloudKit: shouldUseCloudKit,
                 cloudKitErrorDescription: nil,
-                cloudKitFailureReasonCode: nil
+                cloudKitFailureReasonCode: nil,
+                storeName: shouldUseCloudKit ? scopedCloudStoreName : scopedLocalStoreName,
+                accountBucket: accountBucket,
+                accountIdentifier: accountIdentifier
             )
         } catch let preferredError {
             guard shouldUseCloudKit else {
@@ -630,7 +1045,10 @@ private enum AppModelContainerFactory {
                         container: retriedContainer,
                         usesCloudKit: true,
                         cloudKitErrorDescription: nil,
-                        cloudKitFailureReasonCode: nil
+                        cloudKitFailureReasonCode: nil,
+                        storeName: scopedCloudStoreName,
+                        accountBucket: accountBucket,
+                        accountIdentifier: accountIdentifier
                     )
                 } catch {
                     // Continue to local fallback below.
@@ -653,7 +1071,10 @@ private enum AppModelContainerFactory {
                     container: localContainer,
                     usesCloudKit: false,
                     cloudKitErrorDescription: details,
-                    cloudKitFailureReasonCode: reasonCode
+                    cloudKitFailureReasonCode: reasonCode,
+                    storeName: scopedLocalStoreName,
+                    accountBucket: accountBucket,
+                    accountIdentifier: accountIdentifier
                 )
             } catch let localError {
                 fatalError(
@@ -697,13 +1118,7 @@ private enum AppModelContainerFactory {
     }
 
     private static func scopedStoreName(prefix: String, accountIdentifier: String?) -> String {
-        "\(prefix)-\(accountBucket(accountIdentifier))"
-    }
-
-    private static func accountBucket(_ accountIdentifier: String?) -> String {
-        guard let accountIdentifier, !accountIdentifier.isEmpty else { return "guest" }
-        let digest = SHA256.hash(data: Data(accountIdentifier.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined().prefix(24).lowercased()
+        "\(prefix)-\(AccountBucketHasher.bucket(for: accountIdentifier))"
     }
 }
 
@@ -989,56 +1404,32 @@ private enum AppStorageDiagnostics {
 }
 
 private enum StorageModePolicy {
-    private static let appleUserIDKey = "appleUserID"
-    private static let emailUserEmailKey = "emailUserEmail"
-    private static let emailUserIDKey = "emailUserID"
-    private static let authMethodKey = "authMethod"
+    static func resolveAccountScope(
+        allowLegacyEmailStoreFallback: Bool = true
+    ) -> ResolvedAccountScope {
+        AccountScopeSnapshot(defaults: .standard)
+            .resolvedScope(allowLegacyEmailStoreFallback: allowLegacyEmailStoreFallback)
+    }
 
     static func currentCloudBackupAccountIdentifier() -> String? {
-        currentAppleAccountIdentifier() ?? currentEmailCloudBackupIdentifier()
+        resolveAccountScope().cloudBackupAccountIdentifier
     }
 
     static func currentAppleAccountIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let appleUserID = defaults.string(forKey: appleUserIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !appleUserID.isEmpty else { return nil }
-        return "apple:\(appleUserID)"
+        resolveAccountScope().snapshot.appleAccountIdentifier
     }
 
     static func currentEmailAccountIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let emailUserID = defaults.string(forKey: emailUserIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if !emailUserID.isEmpty {
-            return "email_uid:\(emailUserID)"
-        }
-        let emailUserEmail = defaults.string(forKey: emailUserEmailKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if !emailUserEmail.isEmpty {
-            return "email:\(emailUserEmail)"
-        }
-        return nil
-    }
-
-    private static func currentEmailCloudBackupIdentifier() -> String? {
-        let defaults = UserDefaults.standard
-        let emailUserID = defaults.string(forKey: emailUserIDKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if !emailUserID.isEmpty {
-            return "email_uid:\(emailUserID)"
-        }
-        return currentEmailAccountIdentifier()
+        let resolvedScope = resolveAccountScope()
+        return resolvedScope.canonicalEmailAccountIdentifier
+            ?? resolvedScope.legacyEmailAccountIdentifier
     }
 
     static func currentAccountIdentifier() -> String? {
-        currentAppleAccountIdentifier() ?? currentEmailAccountIdentifier()
+        resolveAccountScope().storeAccountIdentifier
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {
-        return currentCloudBackupAccountIdentifier() != nil
+        resolveAccountScope().shouldRequestCloudBackup
     }
 }
