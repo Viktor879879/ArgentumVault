@@ -5444,15 +5444,35 @@ struct SettingsView: View {
 
     private func localizedAccountDeletionError(_ error: Error) -> String {
         switch error {
-        case AccountDeletionError.sessionRequired:
-            return L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+        case let AccountDeletionError.sessionRequired(message):
+            return sanitizedDeleteAccountServerMessage(message)
+                ?? L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
         case AccountDeletionError.networkFailure:
             return L10n.text("settings.account.delete_error_network", lang: uiLanguageCode)
-        case AccountDeletionError.requestFailed:
-            return L10n.text("settings.account.delete_error_failed", lang: uiLanguageCode)
+        case let AccountDeletionError.requestFailed(_, message):
+            return sanitizedDeleteAccountServerMessage(message)
+                ?? L10n.text("settings.account.delete_error_failed", lang: uiLanguageCode)
         default:
             return error.localizedDescription
         }
+    }
+
+    private func sanitizedDeleteAccountServerMessage(_ message: String?) -> String? {
+        guard let message else { return nil }
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        let lowered = normalized.lowercased()
+        if lowered.contains("authorization")
+            || lowered.contains("authenticated user session")
+            || lowered.contains("session is required")
+            || lowered.contains("jwt")
+            || lowered.contains("token")
+        {
+            return L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+        }
+
+        return normalized
     }
 }
 
