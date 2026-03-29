@@ -94,12 +94,18 @@ enum EmailAuthManager {
         let configuration = try SupabaseConfiguration.resolved()
         let cachedSession = client.auth.currentSession
         let cachedToken = normalized(token: cachedSession?.accessToken)
+        let cachedJWT = jwtDiagnosticsSummary(token: cachedToken, projectRef: configuration.projectRef)
         AppDiagnostics.accountDeletion.debug(
             """
             deleteCurrentAccount preflight hasCachedSession=\(cachedSession != nil, privacy: .public) \
             hasCachedToken=\(cachedToken != nil, privacy: .public) \
             cachedTokenLooksLikeJWT=\(looksLikeJWT(cachedToken), privacy: .public) \
             cachedTokenMatchesPublishableKey=\(matchesPublishableKey(cachedToken, publishableKey: configuration.clientKey), privacy: .public) \
+            cachedIssuer=\(cachedJWT?.issuer ?? "none", privacy: .public) \
+            cachedAudience=\(cachedJWT?.audience ?? "none", privacy: .public) \
+            cachedExp=\(cachedJWT?.expirationDescription ?? "none", privacy: .public) \
+            cachedSub=\(cachedJWT?.subject ?? "none", privacy: .public) \
+            cachedProjectRefMatches=\(cachedJWT?.matchesProjectRef ?? false, privacy: .public) \
             tokenPrefix=\(tokenPrefix(cachedToken), privacy: .public)
             """
         )
@@ -108,7 +114,8 @@ enum EmailAuthManager {
         do {
             activeSessionContext = try await ensureActiveSession(
                 client: client,
-                publishableKey: configuration.clientKey
+                publishableKey: configuration.clientKey,
+                projectRef: configuration.projectRef
             )
         } catch {
             AppDiagnostics.accountDeletion.error(
@@ -467,33 +474,20 @@ enum EmailAuthManager {
 
     private static func ensureActiveSession(
         client: SupabaseClient,
-        publishableKey: String
+        publishableKey: String,
+        projectRef: String
     ) async throws -> DeleteAccountSessionContext {
         do {
             let session = try await client.auth.session
-            if let context = validatedDeleteAccountSessionContext(
+            if let context = try await validatedDeleteAccountSessionContext(
+                client: client,
                 session: session,
                 source: .authSession,
-                publishableKey: publishableKey
+                publishableKey: publishableKey,
+                projectRef: projectRef
             ) {
-                AppDiagnostics.accountDeletion.debug(
-                    """
-                    deleteCurrentAccount active session resolved source=\(context.source.rawValue, privacy: .public) \
-                    tokenLooksLikeJWT=\(looksLikeJWT(context.accessToken), privacy: .public) \
-                    tokenMatchesPublishableKey=\(matchesPublishableKey(context.accessToken, publishableKey: publishableKey), privacy: .public) \
-                    tokenPrefix=\(tokenPrefix(context.accessToken), privacy: .public)
-                    """
-                )
                 return context
             }
-            AppDiagnostics.accountDeletion.error(
-                """
-                deleteCurrentAccount auth.session returned invalid token \
-                tokenLooksLikeJWT=\(looksLikeJWT(session.accessToken), privacy: .public) \
-                tokenMatchesPublishableKey=\(matchesPublishableKey(session.accessToken, publishableKey: publishableKey), privacy: .public) \
-                tokenPrefix=\(tokenPrefix(session.accessToken), privacy: .public)
-                """
-            )
         } catch {
             AppDiagnostics.accountDeletion.error(
                 "deleteCurrentAccount auth.session failed error=\(String(describing: error), privacy: .public)"
@@ -501,53 +495,189 @@ enum EmailAuthManager {
         }
 
         let refreshedSession = try await client.auth.refreshSession()
-        if let context = validatedDeleteAccountSessionContext(
+        if let context = try await validatedDeleteAccountSessionContext(
+            client: client,
             session: refreshedSession,
             source: .refreshedSession,
-            publishableKey: publishableKey
+            publishableKey: publishableKey,
+            projectRef: projectRef
         ) {
-            AppDiagnostics.accountDeletion.debug(
-                """
-                deleteCurrentAccount refreshSession success source=\(context.source.rawValue, privacy: .public) \
-                tokenLooksLikeJWT=\(looksLikeJWT(context.accessToken), privacy: .public) \
-                tokenMatchesPublishableKey=\(matchesPublishableKey(context.accessToken, publishableKey: publishableKey), privacy: .public) \
-                tokenPrefix=\(tokenPrefix(context.accessToken), privacy: .public)
-                """
-            )
             return context
         }
-
-        AppDiagnostics.accountDeletion.error(
-            """
-            deleteCurrentAccount refreshSession returned invalid token \
-            tokenLooksLikeJWT=\(looksLikeJWT(refreshedSession.accessToken), privacy: .public) \
-            tokenMatchesPublishableKey=\(matchesPublishableKey(refreshedSession.accessToken, publishableKey: publishableKey), privacy: .public) \
-            tokenPrefix=\(tokenPrefix(refreshedSession.accessToken), privacy: .public)
-            """
-        )
 
         throw AccountDeletionError.sessionRequired(message: "Invalid access token.")
     }
 
     private static func validatedDeleteAccountSessionContext(
+        client: SupabaseClient,
         session: Session,
         source: DeleteAccountTokenSource,
-        publishableKey: String
-    ) -> DeleteAccountSessionContext? {
+        publishableKey: String,
+        projectRef: String
+    ) async throws -> DeleteAccountSessionContext? {
         guard let accessToken = normalized(token: session.accessToken) else {
+            AppDiagnostics.accountDeletion.error(
+                "deleteCurrentAccount token missing source=\(source.rawValue, privacy: .public)"
+            )
             return nil
         }
-        guard looksLikeJWT(accessToken) else {
+
+        let summary = jwtDiagnosticsSummary(token: accessToken, projectRef: projectRef)
+        let looksLikeJWT = looksLikeJWT(accessToken)
+        let matchesKey = matchesPublishableKey(accessToken, publishableKey: publishableKey)
+        let issuer = summary?.issuer ?? "none"
+        let audience = summary?.audience ?? "none"
+        let expiration = summary?.expirationDescription ?? "none"
+        let subject = summary?.subject ?? "none"
+        let matchesProjectRef = summary?.matchesProjectRef ?? false
+        let isExpired = summary?.isExpired ?? false
+
+        guard looksLikeJWT else {
+            AppDiagnostics.accountDeletion.error(
+                """
+                deleteCurrentAccount token is not JWT source=\(source.rawValue, privacy: .public) \
+                tokenMatchesPublishableKey=\(matchesKey, privacy: .public) \
+                issuer=\(issuer, privacy: .public) audience=\(audience, privacy: .public) \
+                exp=\(expiration, privacy: .public) sub=\(subject, privacy: .public) \
+                projectRefMatches=\(matchesProjectRef, privacy: .public) \
+                tokenPrefix=\(tokenPrefix(accessToken), privacy: .public)
+                """
+            )
             return nil
         }
-        guard !matchesPublishableKey(accessToken, publishableKey: publishableKey) else {
+
+        guard !matchesKey else {
+            AppDiagnostics.accountDeletion.error(
+                """
+                deleteCurrentAccount token matches publishable key source=\(source.rawValue, privacy: .public) \
+                issuer=\(issuer, privacy: .public) audience=\(audience, privacy: .public) \
+                exp=\(expiration, privacy: .public) sub=\(subject, privacy: .public) \
+                projectRefMatches=\(matchesProjectRef, privacy: .public) \
+                tokenPrefix=\(tokenPrefix(accessToken), privacy: .public)
+                """
+            )
             return nil
         }
+
+        guard matchesProjectRef else {
+            AppDiagnostics.accountDeletion.error(
+                """
+                deleteCurrentAccount token issuer mismatch source=\(source.rawValue, privacy: .public) \
+                issuer=\(issuer, privacy: .public) audience=\(audience, privacy: .public) \
+                exp=\(expiration, privacy: .public) sub=\(subject, privacy: .public) \
+                expectedProjectRef=\(projectRef, privacy: .public) \
+                tokenPrefix=\(tokenPrefix(accessToken), privacy: .public)
+                """
+            )
+            return nil
+        }
+
+        if isExpired {
+            AppDiagnostics.accountDeletion.error(
+                """
+                deleteCurrentAccount token expired source=\(source.rawValue, privacy: .public) \
+                issuer=\(issuer, privacy: .public) audience=\(audience, privacy: .public) \
+                exp=\(expiration, privacy: .public) sub=\(subject, privacy: .public) \
+                tokenPrefix=\(tokenPrefix(accessToken), privacy: .public)
+                """
+            )
+            return nil
+        }
+
+        do {
+            _ = try await client.auth.user(jwt: accessToken)
+            AppDiagnostics.accountDeletion.debug(
+                """
+                deleteCurrentAccount token verified source=\(source.rawValue, privacy: .public) \
+                issuer=\(issuer, privacy: .public) audience=\(audience, privacy: .public) \
+                exp=\(expiration, privacy: .public) sub=\(subject, privacy: .public) \
+                projectRefMatches=\(matchesProjectRef, privacy: .public) \
+                tokenPrefix=\(tokenPrefix(accessToken), privacy: .public)
+                """
+            )
+        } catch {
+            AppDiagnostics.accountDeletion.error(
+                """
+                deleteCurrentAccount token rejected by auth source=\(source.rawValue, privacy: .public) \
+                issuer=\(issuer, privacy: .public) audience=\(audience, privacy: .public) \
+                exp=\(expiration, privacy: .public) sub=\(subject, privacy: .public) \
+                projectRefMatches=\(matchesProjectRef, privacy: .public) \
+                tokenPrefix=\(tokenPrefix(accessToken), privacy: .public) \
+                error=\(String(describing: error), privacy: .public)
+                """
+            )
+            return nil
+        }
+
         return DeleteAccountSessionContext(
             session: session,
             accessToken: accessToken,
             source: source
         )
+    }
+
+    private static func jwtDiagnosticsSummary(
+        token: String?,
+        projectRef: String
+    ) -> JWTDiagnosticsSummary? {
+        guard let token = normalized(token: token) else {
+            return nil
+        }
+
+        let segments = token.split(separator: ".")
+        guard segments.count >= 2,
+              let payloadData = decodeBase64URL(String(segments[1])),
+              let object = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any]
+        else {
+            return nil
+        }
+
+        let issuer = object["iss"] as? String
+        let subject = object["sub"] as? String
+        let audience: String? = {
+            if let string = object["aud"] as? String {
+                return string
+            }
+            if let array = object["aud"] as? [String] {
+                return array.joined(separator: ",")
+            }
+            return nil
+        }()
+
+        let expirationEpoch: TimeInterval? = {
+            if let number = object["exp"] as? NSNumber {
+                return number.doubleValue
+            }
+            if let string = object["exp"] as? String, let value = TimeInterval(string) {
+                return value
+            }
+            return nil
+        }()
+
+        let expirationDescription: String? = expirationEpoch.map { String(Int($0)) }
+        let isExpired = expirationEpoch.map { $0 <= Date().timeIntervalSince1970 } ?? false
+        let matchesProjectRef = issuer?.contains(projectRef) ?? false
+
+        return JWTDiagnosticsSummary(
+            issuer: issuer,
+            audience: audience,
+            expirationDescription: expirationDescription,
+            subject: subject,
+            matchesProjectRef: matchesProjectRef,
+            isExpired: isExpired
+        )
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        var base64 = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+
+        let remainder = base64.count % 4
+        if remainder != 0 {
+            base64.append(String(repeating: "=", count: 4 - remainder))
+        }
+        return Data(base64Encoded: base64)
     }
 }
 
@@ -555,6 +685,15 @@ private struct DeleteAccountSessionContext {
     let session: Session
     let accessToken: String
     let source: DeleteAccountTokenSource
+}
+
+private struct JWTDiagnosticsSummary {
+    let issuer: String?
+    let audience: String?
+    let expirationDescription: String?
+    let subject: String?
+    let matchesProjectRef: Bool
+    let isExpired: Bool
 }
 
 private struct EdgeFunctionErrorPayload: Decodable {
@@ -569,6 +708,7 @@ private enum SupabaseConfiguration {
     struct ResolvedConfiguration {
         let supabaseURL: URL
         let clientKey: String
+        let projectRef: String
 
         var functionsURL: URL {
             supabaseURL.appendingPathComponent("/functions/v1")
@@ -600,9 +740,19 @@ private enum SupabaseConfiguration {
             throw EmailAuthError.storageFailure
         }
 
+        let projectRef = url.host?
+            .split(separator: ".")
+            .first
+            .map(String.init) ?? ""
+
+        guard !projectRef.isEmpty else {
+            throw EmailAuthError.storageFailure
+        }
+
         return ResolvedConfiguration(
             supabaseURL: url,
-            clientKey: trimmedKey
+            clientKey: trimmedKey,
+            projectRef: projectRef
         )
     }
 
