@@ -2009,8 +2009,12 @@ struct AnalyticsView: View {
         let diff = NSDecimalNumber(decimal: current - previous)
             .dividing(by: NSDecimalNumber(decimal: previous))
             .multiplying(by: NSDecimalNumber(value: 100))
-            .doubleValue
-        let rounded = DecimalFormatter.doubleString(from: abs(diff), minimumFractionDigits: 0, maximumFractionDigits: 1)
+            .decimalValue
+        let rounded = DecimalFormatter.string(
+            from: absDecimal(diff),
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 1
+        )
         let sign = diff >= 0 ? "+" : "-"
         return "\(sign)\(rounded)%"
     }
@@ -2084,8 +2088,8 @@ struct AnalyticsView: View {
         let percent = NSDecimalNumber(decimal: net)
             .dividing(by: NSDecimalNumber(decimal: rangeIncome))
             .multiplying(by: NSDecimalNumber(value: 100))
-            .doubleValue
-        let rounded = DecimalFormatter.doubleString(from: percent, minimumFractionDigits: 0, maximumFractionDigits: 0)
+            .decimalValue
+        let rounded = DecimalFormatter.string(from: percent, minimumFractionDigits: 0, maximumFractionDigits: 0)
         return "\(rounded)%"
     }
 
@@ -2119,10 +2123,10 @@ struct AnalyticsView: View {
         if rangeIncome > 0 {
             let ratio = NSDecimalNumber(decimal: rangeExpenseAbs)
                 .dividing(by: NSDecimalNumber(decimal: rangeIncome))
-                .doubleValue
-            if ratio > 0.9 {
+                .decimalValue
+            if ratio > Decimal(string: "0.9") ?? 0.9 {
                 insights.append(L10n.text("pro.ai.high_burn", lang: uiLanguageCode))
-            } else if ratio < 0.7 {
+            } else if ratio < Decimal(string: "0.7") ?? 0.7 {
                 insights.append(L10n.text("pro.ai.healthy_burn", lang: uiLanguageCode))
             }
         }
@@ -2478,8 +2482,11 @@ struct CategoryTotal: Identifiable {
     
     var formattedPercent: String {
         guard total > 0 else { return "0%" }
-        let percent = (absDecimal(amount) as NSDecimalNumber).doubleValue / (total as NSDecimalNumber).doubleValue * 100
-        let percentText = DecimalFormatter.doubleString(
+        let percent = NSDecimalNumber(decimal: absDecimal(amount))
+            .dividing(by: NSDecimalNumber(decimal: total))
+            .multiplying(by: NSDecimalNumber(value: 100))
+            .decimalValue
+        let percentText = DecimalFormatter.string(
             from: percent,
             minimumFractionDigits: 0,
             maximumFractionDigits: 0
@@ -2502,6 +2509,7 @@ enum CategoryColorPalette {
 enum DecimalFormatter {
     private static let posixLocale = Locale(identifier: "en_US_POSIX")
     private static let supportedLanguageCodes: Set<String> = ["en", "ru", "uk", "sv"]
+    private static let ignoredGroupingScalars: Set<Character> = [" ", "\u{00A0}", "\u{202F}", "_", "'", "’"]
 
     private static func appNumberLocale() -> Locale {
         let languageCode = UserDefaults.standard.string(forKey: "appLanguageCode") ?? "system"
@@ -2512,6 +2520,10 @@ enum DecimalFormatter {
             return Locale(identifier: languageCode)
         }
         return .autoupdatingCurrent
+    }
+
+    private static func inputNumberLocale() -> Locale {
+        .autoupdatingCurrent
     }
 
     private static func formatter(
@@ -2529,11 +2541,15 @@ enum DecimalFormatter {
         return formatter
     }
 
-    static func string(from value: Decimal, maximumFractionDigits: Int = 2) -> String {
+    static func string(
+        from value: Decimal,
+        minimumFractionDigits: Int = 0,
+        maximumFractionDigits: Int = 2
+    ) -> String {
         let formatter = formatter(
             locale: appNumberLocale(),
             usesGroupingSeparator: true,
-            minimumFractionDigits: 0,
+            minimumFractionDigits: minimumFractionDigits,
             maximumFractionDigits: maximumFractionDigits
         )
         let number = NSDecimalNumber(decimal: value)
@@ -2563,74 +2579,121 @@ enum DecimalFormatter {
         return formatter.string(from: number) ?? "\(value)"
     }
 
-    static func doubleString(
-        from value: Double,
-        minimumFractionDigits: Int = 0,
-        maximumFractionDigits: Int = 2
-    ) -> String {
-        let formatter = formatter(
-            locale: appNumberLocale(),
-            usesGroupingSeparator: true,
-            minimumFractionDigits: minimumFractionDigits,
-            maximumFractionDigits: maximumFractionDigits
-        )
-        let number = NSNumber(value: value)
-        return formatter.string(from: number) ?? "\(value)"
-    }
-    
     static func parse(_ text: String) -> Decimal? {
+        parse(text, locale: inputNumberLocale())
+    }
+
+    static func parse(_ text: String, locale: Locale) -> Decimal? {
         guard SecurityValidation.isAllowedAmountInput(text) else {
             return nil
         }
+        guard let normalized = normalizedDecimalString(from: text, locale: locale) else {
+            return nil
+        }
+        return Decimal(string: normalized, locale: posixLocale)
+    }
+
+    static func normalizedDecimalString(from text: String, locale: Locale) -> String? {
         var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleaned.isEmpty { return nil }
 
-        cleaned = cleaned
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "\u{00A0}", with: "")
-            .replacingOccurrences(of: "\u{202F}", with: "")
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "'", with: "")
-            .replacingOccurrences(of: "’", with: "")
+        cleaned.removeAll(where: { ignoredGroupingScalars.contains($0) })
+        if cleaned.isEmpty { return nil }
 
-        let locale = appNumberLocale()
-        if let groupingSeparator = locale.groupingSeparator, !groupingSeparator.isEmpty {
-            cleaned = cleaned.replacingOccurrences(of: groupingSeparator, with: "")
-        }
-        if let decimalSeparator = locale.decimalSeparator,
-           !decimalSeparator.isEmpty,
-           decimalSeparator != "." {
-            cleaned = cleaned.replacingOccurrences(of: decimalSeparator, with: ".")
-        }
-        
-        let lastComma = cleaned.lastIndex(of: ",")
-        let lastDot = cleaned.lastIndex(of: ".")
-        
-        if let comma = lastComma, let dot = lastDot {
-            if comma > dot {
-                cleaned = cleaned.replacingOccurrences(of: ".", with: "")
-                cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
-            } else {
-                cleaned = cleaned.replacingOccurrences(of: ",", with: "")
-            }
-        } else if lastComma != nil {
-            cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
-        }
-        
-        let allowed = CharacterSet(charactersIn: "0123456789.-")
-        if cleaned.rangeOfCharacter(from: allowed.inverted) != nil {
-            return nil
-        }
-        if cleaned.filter({ $0 == "." }).count > 1 {
-            return nil
-        }
         if cleaned.filter({ $0 == "-" }).count > 1 {
             return nil
         }
         if let minusIndex = cleaned.firstIndex(of: "-"), minusIndex != cleaned.startIndex {
             return nil
         }
-        return Decimal(string: cleaned, locale: posixLocale)
+
+        let isNegative = cleaned.first == "-"
+        let unsigned = isNegative ? String(cleaned.dropFirst()) : cleaned
+        guard !unsigned.isEmpty else { return nil }
+        guard unsigned.allSatisfy({ $0.isNumber || $0 == "," || $0 == "." }) else {
+            return nil
+        }
+
+        let normalizedUnsigned = normalizeUnsignedDecimal(unsigned, locale: locale)
+        guard let normalizedUnsigned, !normalizedUnsigned.isEmpty else {
+            return nil
+        }
+
+        return isNegative ? "-\(normalizedUnsigned)" : normalizedUnsigned
+    }
+
+    private static func normalizeUnsignedDecimal(_ text: String, locale: Locale) -> String? {
+        guard text.contains(where: \.isNumber) else { return nil }
+
+        let commaCount = text.filter({ $0 == "," }).count
+        let dotCount = text.filter({ $0 == "." }).count
+
+        if commaCount == 0 && dotCount == 0 {
+            return text
+        }
+
+        if commaCount > 0 && dotCount > 0 {
+            return normalizeMixedSeparatorDecimal(text)
+        }
+
+        let separator: Character = commaCount > 0 ? "," : "."
+        let count = commaCount > 0 ? commaCount : dotCount
+        let parts = text.split(separator: separator, omittingEmptySubsequences: false)
+
+        guard parts.count >= 2, parts.allSatisfy({ !$0.isEmpty }) else {
+            return nil
+        }
+
+        if count > 1 {
+            guard parts.dropFirst().allSatisfy({ $0.count == 3 }) else {
+                return nil
+            }
+            return parts.joined()
+        }
+
+        let integerPart = String(parts[0])
+        let fractionalPart = String(parts[1])
+        let groupingSeparator = locale.groupingSeparator?.first
+        let decimalSeparator = locale.decimalSeparator?.first
+
+        if separator == groupingSeparator,
+           separator != decimalSeparator,
+           fractionalPart.count == 3,
+           !integerPart.isEmpty {
+            return integerPart + fractionalPart
+        }
+
+        let normalizedIntegerPart = integerPart.isEmpty ? "0" : integerPart
+        return "\(normalizedIntegerPart).\(fractionalPart)"
+    }
+
+    private static func normalizeMixedSeparatorDecimal(_ text: String) -> String? {
+        guard let lastComma = text.lastIndex(of: ","),
+              let lastDot = text.lastIndex(of: ".") else {
+            return nil
+        }
+
+        let decimalSeparator: Character = lastComma > lastDot ? "," : "."
+        let groupingSeparator: Character = decimalSeparator == "," ? "." : ","
+
+        let pieces = text.split(separator: decimalSeparator, omittingEmptySubsequences: false)
+        guard pieces.count == 2 else { return nil }
+
+        let integerPart = String(pieces[0])
+        let fractionalPart = String(pieces[1])
+
+        guard !fractionalPart.isEmpty, !fractionalPart.contains(groupingSeparator) else {
+            return nil
+        }
+
+        let normalizedIntegerPart = integerPart.replacingOccurrences(of: String(groupingSeparator), with: "")
+        let safeIntegerPart = normalizedIntegerPart.isEmpty ? "0" : normalizedIntegerPart
+
+        guard safeIntegerPart.allSatisfy(\.isNumber), fractionalPart.allSatisfy(\.isNumber) else {
+            return nil
+        }
+
+        return "\(safeIntegerPart).\(fractionalPart)"
     }
 
     static func parseOrEvaluate(_ text: String) -> Decimal? {
@@ -2899,11 +2962,14 @@ struct SummaryComparisonView: View {
     
     var body: some View {
         let delta = currentTotal - previousTotal
-        let percent: Double = {
+        let percent: Decimal = {
             if previousTotal == 0 {
                 return 0
             }
-            return NSDecimalNumber(decimal: delta).doubleValue / NSDecimalNumber(decimal: previousTotal).doubleValue * 100
+            return NSDecimalNumber(decimal: delta)
+                .dividing(by: NSDecimalNumber(decimal: previousTotal))
+                .multiplying(by: NSDecimalNumber(value: 100))
+                .decimalValue
         }()
         
         return VStack(alignment: .leading, spacing: 6) {
@@ -2945,12 +3011,12 @@ struct SummaryComparisonView: View {
         return "\(sign)\(DecimalFormatter.string(from: absDecimal(amount))) \(currency)"
     }
     
-    private func changeLabel(delta: Decimal, percent: Double) -> String {
+    private func changeLabel(delta: Decimal, percent: Decimal) -> String {
         let sign = delta >= 0 ? "+" : "-"
         let absDelta = delta >= 0 ? delta : -delta
         let deltaText = DecimalFormatter.string(from: absDelta)
-        let percentText = DecimalFormatter.doubleString(
-            from: abs(percent),
+        let percentText = DecimalFormatter.string(
+            from: absDecimal(percent),
             minimumFractionDigits: 1,
             maximumFractionDigits: 1
         )
@@ -4396,6 +4462,7 @@ struct SettingsView: View {
     @State private var showDeleteAccountConfirmation = false
     @State private var showDeleteAccountError = false
     @State private var deleteAccountErrorMessage = ""
+    @State private var deleteAccountDiagnosticsMessage = ""
     @State private var isDeletingAccount = false
     @State private var showPaywall = false
     @State private var showEmailAuthSheet = false
@@ -4909,7 +4976,7 @@ struct SettingsView: View {
             ) {
                 Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
             } message: {
-                Text(deleteAccountErrorMessage)
+                Text(composedDeleteAccountErrorMessage)
             }
             .onAppear {
                 if appCountryCode.isEmpty {
@@ -5154,6 +5221,7 @@ struct SettingsView: View {
         guard !isDeletingAccount else { return }
         guard let accountID = currentSetupAccountID() else {
             deleteAccountErrorMessage = L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+            deleteAccountDiagnosticsMessage = ""
             showDeleteAccountError = true
             return
         }
@@ -5179,15 +5247,18 @@ struct SettingsView: View {
                         "deleteCurrentAccount flow backend success bucket=\(accountBucket, privacy: .public)"
                     )
                     isDeletingAccount = false
+                    deleteAccountDiagnosticsMessage = ""
                     completeDeletedAccountCleanup(accountID: accountID)
                 }
             } catch {
+                let diagnostics = await EmailAuthManager.latestDeleteAccountDiagnosticsText()
                 await MainActor.run {
                     AppDiagnostics.accountDeletion.error(
                         "deleteCurrentAccount flow failure bucket=\(accountBucket, privacy: .public) error=\(String(describing: error), privacy: .public)"
                     )
                     isDeletingAccount = false
                     deleteAccountErrorMessage = localizedAccountDeletionError(error)
+                    deleteAccountDiagnosticsMessage = diagnostics ?? ""
                     showDeleteAccountError = true
                 }
             }
@@ -5455,6 +5526,12 @@ struct SettingsView: View {
         default:
             return error.localizedDescription
         }
+    }
+
+    private var composedDeleteAccountErrorMessage: String {
+        let details = deleteAccountDiagnosticsMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !details.isEmpty else { return deleteAccountErrorMessage }
+        return "\(deleteAccountErrorMessage)\n\nDelete diagnostics\n\(details)"
     }
 
     private func sanitizedDeleteAccountServerMessage(_ message: String?) -> String? {

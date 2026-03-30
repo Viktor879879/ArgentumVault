@@ -9,7 +9,7 @@ struct WalletRateSnapshot: Sendable {
 struct FXRatesSnapshot: Codable {
     let base: String
     let date: String
-    let rates: [String: Double]
+    let rates: [String: Decimal]
 }
 
 enum RateServiceError: Error {
@@ -28,12 +28,12 @@ final class RateService: ObservableObject {
     private let metalTTL: TimeInterval = 60 * 60 * 12
     private let stockTTL: TimeInterval = 60 * 60 * 12
     
-    @Published private(set) var fxRates: [String: Double] = [:]
+    @Published private(set) var fxRates: [String: Decimal] = [:]
     @Published private(set) var fxBase: String = "EUR"
     @Published private(set) var lastFXUpdate: Date?
-    @Published private(set) var cryptoUSDPrices: [String: Double] = [:]
-    @Published private(set) var metalUSDPrices: [String: Double] = [:]
-    @Published private(set) var stockUSDPrices: [String: Double] = [:]
+    @Published private(set) var cryptoUSDPrices: [String: Decimal] = [:]
+    @Published private(set) var metalUSDPrices: [String: Decimal] = [:]
+    @Published private(set) var stockUSDPrices: [String: Decimal] = [:]
     @Published private(set) var lastCryptoUpdate: Date?
     @Published private(set) var lastMetalUpdate: Date?
     @Published private(set) var lastStockUpdate: Date?
@@ -53,7 +53,7 @@ final class RateService: ObservableObject {
         do {
             let snapshot = try await frankfurter.latestRates(base: base)
             let baseCode = snapshot.base.uppercased()
-            var normalizedRates: [String: Double] = [:]
+            var normalizedRates: [String: Decimal] = [:]
             for (code, rate) in snapshot.rates {
                 normalizedRates[code.uppercased()] = rate
             }
@@ -70,7 +70,9 @@ final class RateService: ObservableObject {
                     fxRates["USD"] = usd
                 } else if let usdToBase = try? await erApi.usdRate(for: baseCode),
                           usdToBase > 0 {
-                    fxRates["USD"] = 1 / usdToBase
+                    fxRates["USD"] = NSDecimalNumber(value: 1)
+                        .dividing(by: NSDecimalNumber(decimal: usdToBase))
+                        .decimalValue
                 }
             }
             
@@ -82,11 +84,13 @@ final class RateService: ObservableObject {
                 }
                 if fxRates["UAH"] == nil {
                     if let usdToUAH = try? await erApi.usdRate(for: "UAH") {
-                        let baseToUAH: Double
+                        let baseToUAH: Decimal
                         if baseCode == "USD" {
                             baseToUAH = usdToUAH
                         } else if let baseToUSD = fxRates["USD"] {
-                            baseToUAH = usdToUAH * baseToUSD
+                            baseToUAH = NSDecimalNumber(decimal: usdToUAH)
+                                .multiplying(by: NSDecimalNumber(decimal: baseToUSD))
+                                .decimalValue
                         } else {
                             baseToUAH = usdToUAH
                         }
@@ -265,15 +269,21 @@ final class RateService: ObservableObject {
             return convertFiat(amount: amount, from: assetCode, to: targetCode)
         case .crypto:
             guard let usdPrice = cryptoUSDPrices[assetCode.uppercased()] else { return nil }
-            let usdValue = (amount as NSDecimalNumber).doubleValue * usdPrice
+            let usdValue = NSDecimalNumber(decimal: amount)
+                .multiplying(by: NSDecimalNumber(decimal: usdPrice))
+                .decimalValue
             return convertUSDToTarget(usdValue, target: targetCode)
         case .metal:
             guard let usdPrice = metalUSDPrices[assetCode.uppercased()] else { return nil }
-            let usdValue = (amount as NSDecimalNumber).doubleValue * usdPrice
+            let usdValue = NSDecimalNumber(decimal: amount)
+                .multiplying(by: NSDecimalNumber(decimal: usdPrice))
+                .decimalValue
             return convertUSDToTarget(usdValue, target: targetCode)
         case .stock:
             guard let usdPrice = stockUSDPrices[assetCode.uppercased()] else { return nil }
-            let usdValue = (amount as NSDecimalNumber).doubleValue * usdPrice
+            let usdValue = NSDecimalNumber(decimal: amount)
+                .multiplying(by: NSDecimalNumber(decimal: usdPrice))
+                .decimalValue
             return convertUSDToTarget(usdValue, target: targetCode)
         }
     }
@@ -283,36 +293,43 @@ final class RateService: ObservableObject {
             return amount
         }
         guard let rateToSource = fxRate(for: source) else { return nil }
-        let amountInBase = (amount as NSDecimalNumber).doubleValue / rateToSource
+        let amountInBase = NSDecimalNumber(decimal: amount)
+            .dividing(by: NSDecimalNumber(decimal: rateToSource))
+            .decimalValue
         if target == fxBase {
-            return Decimal(amountInBase)
+            return amountInBase
         }
         guard let rateToTarget = fxRate(for: target) else { return nil }
-        let amountInTarget = amountInBase * rateToTarget
-        return Decimal(amountInTarget)
+        return NSDecimalNumber(decimal: amountInBase)
+            .multiplying(by: NSDecimalNumber(decimal: rateToTarget))
+            .decimalValue
     }
     
-    private func convertUSDToTarget(_ usdValue: Double, target: String) -> Decimal? {
+    private func convertUSDToTarget(_ usdValue: Decimal, target: String) -> Decimal? {
         if target == "USD" {
-            return Decimal(usdValue)
+            return usdValue
         }
         guard let rateToUSD = fxRate(for: "USD") else { return nil }
-        let amountInBase = usdValue / rateToUSD
+        let amountInBase = NSDecimalNumber(decimal: usdValue)
+            .dividing(by: NSDecimalNumber(decimal: rateToUSD))
+            .decimalValue
         if target == fxBase {
-            return Decimal(amountInBase)
+            return amountInBase
         }
         guard let rateToTarget = fxRate(for: target) else { return nil }
-        return Decimal(amountInBase * rateToTarget)
+        return NSDecimalNumber(decimal: amountInBase)
+            .multiplying(by: NSDecimalNumber(decimal: rateToTarget))
+            .decimalValue
     }
     
-    private func fxRate(for code: String) -> Double? {
+    private func fxRate(for code: String) -> Decimal? {
         if code == fxBase {
             return 1
         }
         return fxRates[code]
     }
     
-    func cryptoPrice(symbol: String, quote: String) async -> Double? {
+    func cryptoPrice(symbol: String, quote: String) async -> Decimal? {
         do {
             return try await binance.tickerPrice(base: symbol, quote: quote)
         } catch {
@@ -321,7 +338,7 @@ final class RateService: ObservableObject {
     }
     
     
-    func stockQuote(symbol: String) async -> Double? {
+    func stockQuote(symbol: String) async -> Decimal? {
         do {
             return try await yahooFinance.latestAvailablePrice(symbol: symbol)
         } catch {
@@ -331,12 +348,12 @@ final class RateService: ObservableObject {
 }
 
 private struct CacheSnapshot: Codable {
-    let fxRates: [String: Double]
+    let fxRates: [String: Decimal]
     let fxBase: String
     let lastFXUpdate: Date?
-    let cryptoUSDPrices: [String: Double]
-    let metalUSDPrices: [String: Double]
-    let stockUSDPrices: [String: Double]
+    let cryptoUSDPrices: [String: Decimal]
+    let metalUSDPrices: [String: Decimal]
+    let stockUSDPrices: [String: Decimal]
     let lastCryptoUpdate: Date?
     let lastMetalUpdate: Date?
     let lastStockUpdate: Date?
@@ -357,7 +374,9 @@ struct FrankfurterProvider {
 }
 
 struct BinanceProvider {
-    func tickerPrice(base: String, quote: String) async throws -> Double {
+    private static let posixLocale = Locale(identifier: "en_US_POSIX")
+
+    func tickerPrice(base: String, quote: String) async throws -> Decimal {
         guard var components = URLComponents(string: "https://data-api.binance.vision/api/v3/ticker/price") else {
             throw RateServiceError.invalidURL
         }
@@ -367,7 +386,10 @@ struct BinanceProvider {
         guard let url = components.url else { throw RateServiceError.invalidURL }
         let (data, _) = try await URLSession.shared.data(from: url)
         let response = try JSONDecoder().decode(BinanceTickerPrice.self, from: data)
-        return Double(response.price) ?? 0
+        guard let price = Decimal(string: response.price, locale: Self.posixLocale), price > 0 else {
+            throw RateServiceError.unexpectedResponse
+        }
+        return price
     }
     
     private struct BinanceTickerPrice: Decodable {
@@ -392,7 +414,7 @@ struct ExchangerateHostProvider {
 }
 
 struct YahooFinanceProvider {
-    func latestAvailablePrice(symbol: String) async throws -> Double {
+    func latestAvailablePrice(symbol: String) async throws -> Decimal {
         guard var components = URLComponents(string: "https://query1.finance.yahoo.com/v8/finance/chart/\(symbol)") else {
             throw RateServiceError.invalidURL
         }
@@ -439,8 +461,8 @@ struct YahooFinanceProvider {
     }
     
     private struct YahooMeta: Decodable {
-        let regularMarketPrice: Double?
-        let previousClose: Double?
+        let regularMarketPrice: Decimal?
+        let previousClose: Decimal?
     }
     
     private struct YahooIndicators: Decodable {
@@ -448,12 +470,12 @@ struct YahooFinanceProvider {
     }
     
     private struct YahooQuote: Decodable {
-        let close: [Double?]?
+        let close: [Decimal?]?
     }
 }
 
 struct ErApiProvider {
-    func usdRate(for symbol: String) async throws -> Double {
+    func usdRate(for symbol: String) async throws -> Decimal {
         guard let url = URL(string: "https://open.er-api.com/v6/latest/USD") else {
             throw RateServiceError.invalidURL
         }
@@ -466,26 +488,26 @@ struct ErApiProvider {
     }
     
     private struct ErApiResponse: Decodable {
-        let rates: [String: Double]
+        let rates: [String: Decimal]
     }
 }
 
 struct MetalsLiveProvider {
-    func spotUSD(symbols: [String]) async throws -> [String: Double] {
+    func spotUSD(symbols: [String]) async throws -> [String: Decimal] {
         guard let url = URL(string: "https://api.metals.live/v1/spot") else {
             throw RateServiceError.invalidURL
         }
         let (data, _) = try await URLSession.shared.data(from: url)
         let raw = try JSONSerialization.jsonObject(with: data) as? [[Any]] ?? []
-        var result: [String: Double] = [:]
+        var result: [String: Decimal] = [:]
         for entry in raw {
             guard entry.count >= 2 else { continue }
             guard let symbol = entry[0] as? String else { continue }
-            let value: Double?
-            if let v = entry[1] as? Double {
-                value = v
+            let value: Decimal?
+            if let decimal = entry[1] as? Decimal {
+                value = decimal
             } else if let number = entry[1] as? NSNumber {
-                value = number.doubleValue
+                value = number.decimalValue
             } else {
                 value = nil
             }

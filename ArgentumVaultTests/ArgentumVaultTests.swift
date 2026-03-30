@@ -41,6 +41,35 @@ struct ArgentumVaultTests {
         #expect(SecurityValidation.sanitizeSHA256Hex("short") == nil)
     }
 
+    @Test func parsesAmountsWithCommaDotAndGroupingSeparators() async throws {
+        let swedish = Locale(identifier: "sv_SE")
+        let us = Locale(identifier: "en_US")
+
+        #expect(DecimalFormatter.parse("132,14", locale: swedish) == Decimal(string: "132.14"))
+        #expect(DecimalFormatter.parse("132.14", locale: swedish) == Decimal(string: "132.14"))
+        #expect(DecimalFormatter.parse("0,99", locale: swedish) == Decimal(string: "0.99"))
+        #expect(DecimalFormatter.parse("1,5", locale: swedish) == Decimal(string: "1.5"))
+        #expect(DecimalFormatter.parse("1000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1 000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1\u{00A0}000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1.000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1,000.25", locale: us) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("132,14", locale: us) == Decimal(string: "132.14"))
+    }
+
+    @Test func rejectsMalformedMixedSeparatorAmounts() async throws {
+        let swedish = Locale(identifier: "sv_SE")
+
+        #expect(DecimalFormatter.parse("1,000.2,5", locale: swedish) == nil)
+        #expect(DecimalFormatter.parse("1.000,2.5", locale: swedish) == nil)
+        #expect(DecimalFormatter.parse("1..25", locale: swedish) == nil)
+    }
+
+    @Test func exportsDecimalAmountsWithoutFloatingPointConversion() async throws {
+        #expect(DecimalFormatter.exportString(from: Decimal(string: "132.14")!) == "132.14")
+        #expect(DecimalFormatter.exportString(from: Decimal(string: "1000.25")!) == "1000.25")
+    }
+
     @Test func appleNonceHelpersStayStableAndBounded() async throws {
         let nonce = AppleSignInCoordinator.randomNonceString(length: 32)
         let allowed = Set("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")

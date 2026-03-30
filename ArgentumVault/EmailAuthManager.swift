@@ -26,6 +26,7 @@ enum AccountDeletionError: Error {
 }
 
 enum EmailAuthManager {
+    private static let deleteAccountDiagnosticsStore = DeleteAccountDiagnosticsStore()
     private static let clientResult: Result<SupabaseClient, EmailAuthError> = {
         do {
             return .success(try SupabaseConfiguration.makeClient())
@@ -95,7 +96,23 @@ enum EmailAuthManager {
         let cachedSession = client.auth.currentSession
         let cachedToken = normalized(token: cachedSession?.accessToken)
         let cachedJWT = jwtDiagnosticsSummary(token: cachedToken, projectRef: configuration.projectRef)
-        AppDiagnostics.accountDeletion.debug(
+        var diagnostics = DeleteAccountDiagnosticsSnapshot(
+            hasCachedSession: cachedSession != nil,
+            hasCachedToken: cachedToken != nil,
+            tokenLooksLikeJWT: looksLikeJWT(cachedToken),
+            tokenMatchesPublishableKey: matchesPublishableKey(cachedToken, publishableKey: configuration.clientKey),
+            cachedIssuer: cachedJWT?.issuer ?? "none",
+            cachedAudience: cachedJWT?.audience ?? "none",
+            cachedExp: cachedJWT?.expirationDescription ?? "none",
+            cachedProjectRefMatches: cachedJWT?.matchesProjectRef ?? false,
+            tokenSource: "none",
+            hasAuthorizationHeader: false,
+            requestURL: nil,
+            statusCode: nil,
+            responseBodySnippet: nil
+        )
+        await deleteAccountDiagnosticsStore.set(diagnostics)
+        AppDiagnostics.accountDeletion.notice(
             """
             deleteCurrentAccount preflight hasCachedSession=\(cachedSession != nil, privacy: .public) \
             hasCachedToken=\(cachedToken != nil, privacy: .public) \
@@ -127,8 +144,11 @@ enum EmailAuthManager {
         let accessToken = activeSessionContext.accessToken
         let sessionUserID = normalized(userID: activeSessionContext.session.user.id) ?? "unknown"
         let functionURL = configuration.functionsURL.appendingPathComponent("delete-account")
+        diagnostics.tokenSource = activeSessionContext.source.rawValue
+        diagnostics.requestURL = functionURL.absoluteString
+        await deleteAccountDiagnosticsStore.set(diagnostics)
 
-        AppDiagnostics.accountDeletion.debug(
+        AppDiagnostics.accountDeletion.notice(
             """
             deleteCurrentAccount start userID=\(sessionUserID, privacy: .public) \
             tokenSource=\(activeSessionContext.source.rawValue, privacy: .public) \
@@ -146,8 +166,10 @@ enum EmailAuthManager {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.setValue(configuration.clientKey, forHTTPHeaderField: "apikey")
             request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            diagnostics.hasAuthorizationHeader = true
+            await deleteAccountDiagnosticsStore.set(diagnostics)
 
-            AppDiagnostics.accountDeletion.debug(
+            AppDiagnostics.accountDeletion.notice(
                 """
                 deleteCurrentAccount request prepared url=\(functionURL.absoluteString, privacy: .public) \
                 hasAuthorizationHeader=true hasApiKeyHeader=true \
@@ -167,7 +189,10 @@ enum EmailAuthManager {
             }
 
             let bodySnippet = decodedFunctionBodySnippet(from: data)
-            AppDiagnostics.accountDeletion.debug(
+            diagnostics.statusCode = httpResponse.statusCode
+            diagnostics.responseBodySnippet = bodySnippet
+            await deleteAccountDiagnosticsStore.set(diagnostics)
+            AppDiagnostics.accountDeletion.notice(
                 """
                 deleteCurrentAccount response userID=\(sessionUserID, privacy: .public) \
                 statusCode=\(httpResponse.statusCode, privacy: .public) \
@@ -586,7 +611,7 @@ enum EmailAuthManager {
 
         do {
             _ = try await client.auth.user(jwt: accessToken)
-            AppDiagnostics.accountDeletion.debug(
+            AppDiagnostics.accountDeletion.notice(
                 """
                 deleteCurrentAccount token verified source=\(source.rawValue, privacy: .public) \
                 issuer=\(issuer, privacy: .public) audience=\(audience, privacy: .public) \
@@ -679,6 +704,15 @@ enum EmailAuthManager {
         }
         return Data(base64Encoded: base64)
     }
+
+    static func latestDeleteAccountDiagnosticsText() async -> String? {
+        guard let snapshot = await deleteAccountDiagnosticsStore.get() else {
+            return nil
+        }
+        let lines = snapshot.userVisibleLines
+        guard !lines.isEmpty else { return nil }
+        return lines.joined(separator: "\n")
+    }
 }
 
 private struct DeleteAccountSessionContext {
@@ -699,6 +733,52 @@ private struct JWTDiagnosticsSummary {
 private struct EdgeFunctionErrorPayload: Decodable {
     let error: String?
     let message: String?
+}
+
+private struct DeleteAccountDiagnosticsSnapshot {
+    var hasCachedSession: Bool
+    var hasCachedToken: Bool
+    var tokenLooksLikeJWT: Bool
+    var tokenMatchesPublishableKey: Bool
+    var cachedIssuer: String
+    var cachedAudience: String
+    var cachedExp: String
+    var cachedProjectRefMatches: Bool
+    var tokenSource: String
+    var hasAuthorizationHeader: Bool
+    var requestURL: String?
+    var statusCode: Int?
+    var responseBodySnippet: String?
+
+    var userVisibleLines: [String] {
+        [
+            "hasCachedSession=\(hasCachedSession)",
+            "hasCachedToken=\(hasCachedToken)",
+            "tokenLooksLikeJWT=\(tokenLooksLikeJWT)",
+            "tokenMatchesPublishableKey=\(tokenMatchesPublishableKey)",
+            "cachedIssuer=\(cachedIssuer)",
+            "cachedAudience=\(cachedAudience)",
+            "cachedExp=\(cachedExp)",
+            "cachedProjectRefMatches=\(cachedProjectRefMatches)",
+            "tokenSource=\(tokenSource)",
+            "hasAuthorizationHeader=\(hasAuthorizationHeader)",
+            "requestURL=\(requestURL ?? "none")",
+            "statusCode=\(statusCode.map(String.init) ?? "none")",
+            "responseBodySnippet=\(responseBodySnippet ?? "none")"
+        ]
+    }
+}
+
+private actor DeleteAccountDiagnosticsStore {
+    private var snapshot: DeleteAccountDiagnosticsSnapshot?
+
+    func set(_ snapshot: DeleteAccountDiagnosticsSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func get() -> DeleteAccountDiagnosticsSnapshot? {
+        snapshot
+    }
 }
 
 private enum SupabaseConfiguration {
