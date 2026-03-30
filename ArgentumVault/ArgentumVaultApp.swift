@@ -23,7 +23,108 @@ enum AppDiagnostics {
     static let accountScope = Logger(subsystem: "com.argentumvault.app", category: "AccountScope")
     static let accountDeletion = Logger(subsystem: "com.argentumvault.app", category: "AccountDeletion")
     static let backup = Logger(subsystem: "com.argentumvault.app", category: "BackupRestore")
+    static let moneyInput = Logger(subsystem: "com.argentumvault.app", category: "MoneyInput")
 }
+
+enum MoneyInputTrace {
+    static var isEnabled: Bool {
+#if DEBUG
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.environment["ARGENTUM_MONEY_TRACE"] == "1"
+            || processInfo.arguments.contains("-ARGENTUM_MONEY_TRACE")
+#else
+        false
+#endif
+    }
+
+    static func log(_ message: @autoclosure () -> String) {
+#if DEBUG
+        guard isEnabled else { return }
+        let rendered = message()
+        print("[MoneyTrace] \(rendered)")
+        AppDiagnostics.moneyInput.notice("\(rendered, privacy: .public)")
+#endif
+    }
+}
+
+#if DEBUG
+private enum DebugLaunchControl {
+    private static let uiTestWalletSyncID = "ui-test-wallet-sek"
+
+    static var shouldSeedUITestData: Bool {
+        ProcessInfo.processInfo.environment["ARGENTUM_UI_TEST_SEED"] == "1"
+    }
+
+    @MainActor
+    static func prepareContainerIfNeeded(_ container: ModelContainer) {
+        guard shouldSeedUITestData else { return }
+
+        let context = ModelContext(container)
+        resetFinancialData(in: context)
+        seedWalletIfNeeded(in: context)
+    }
+
+    @MainActor
+    private static func resetFinancialData(in context: ModelContext) {
+        deleteAll(Transaction.self, in: context)
+        deleteAll(RecurringTransactionRule.self, in: context)
+        deleteAll(CategoryBudget.self, in: context)
+        deleteAll(Wallet.self, in: context)
+        deleteAll(WalletFolder.self, in: context)
+
+        do {
+            try context.save()
+            MoneyInputTrace.log("UITest seed reset completed")
+        } catch {
+            MoneyInputTrace.log("UITest seed reset failed error=\(error)")
+        }
+    }
+
+    @MainActor
+    private static func seedWalletIfNeeded(in context: ModelContext) {
+        let descriptor = FetchDescriptor<Wallet>(
+            predicate: #Predicate { wallet in
+                wallet.syncID == uiTestWalletSyncID
+            }
+        )
+
+        if let existing = try? context.fetch(descriptor), !existing.isEmpty {
+            MoneyInputTrace.log("UITest wallet already present syncID=\(uiTestWalletSyncID)")
+            return
+        }
+
+        let wallet = Wallet(
+            syncID: uiTestWalletSyncID,
+            name: "UI Test Wallet",
+            assetCode: "SEK",
+            kind: .fiat,
+            balance: 1_000
+        )
+        context.insert(wallet)
+
+        do {
+            try context.save()
+            MoneyInputTrace.log(
+                "UITest wallet seeded name=\(wallet.name) assetCode=\(wallet.assetCode) balance=\(wallet.balance)"
+            )
+        } catch {
+            MoneyInputTrace.log("UITest wallet seed failed error=\(error)")
+        }
+    }
+
+    @MainActor
+    private static func deleteAll<ModelType: PersistentModel>(
+        _ type: ModelType.Type,
+        in context: ModelContext
+    ) {
+        let descriptor = FetchDescriptor<ModelType>()
+        guard let models = try? context.fetch(descriptor) else { return }
+        for model in models {
+            context.delete(model)
+        }
+    }
+}
+#endif
 
 enum AccountBucketHasher {
     static func bucket(for accountIdentifier: String?) -> String {
@@ -415,6 +516,9 @@ private struct AppBootstrapView: View {
         )
         modelContainer = fallbackSelection.container
         isCloudStoreEnabled = false
+#if DEBUG
+        DebugLaunchControl.prepareContainerIfNeeded(fallbackSelection.container)
+#endif
         hasResolvedAccountScope = true
         activeStoreAccountIdentifier = accountIdentifier
         isSwitchingContainer = false
@@ -633,6 +737,9 @@ private struct AppBootstrapView: View {
         modelContainer = selection.container
         isCloudStoreEnabled = selection.usesCloudKit
         activeStoreAccountIdentifier = resolvedAccountIdentifier
+#if DEBUG
+        DebugLaunchControl.prepareContainerIfNeeded(selection.container)
+#endif
         AppStorageDiagnostics.persist(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
         scheduleCloudRetryIfNeeded(requestedCloud: resolvedShouldEnableCloudBackup, selection: selection)
 

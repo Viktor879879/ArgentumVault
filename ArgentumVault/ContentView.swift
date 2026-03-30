@@ -2585,12 +2585,18 @@ enum DecimalFormatter {
 
     static func parse(_ text: String, locale: Locale) -> Decimal? {
         guard SecurityValidation.isAllowedAmountInput(text) else {
+            MoneyInputTrace.log("parse rejected raw=\(text) locale=\(locale.identifier) reason=disallowed_input")
             return nil
         }
         guard let normalized = normalizedDecimalString(from: text, locale: locale) else {
+            MoneyInputTrace.log("parse failed raw=\(text) locale=\(locale.identifier) reason=normalization_failed")
             return nil
         }
-        return Decimal(string: normalized, locale: posixLocale)
+        let parsed = Decimal(string: normalized, locale: posixLocale)
+        MoneyInputTrace.log(
+            "parse raw=\(text) locale=\(locale.identifier) normalized=\(normalized) parsed=\(String(describing: parsed))"
+        )
+        return parsed
     }
 
     static func normalizedDecimalString(from text: String, locale: Locale) -> String? {
@@ -2660,7 +2666,10 @@ enum DecimalFormatter {
            separator != decimalSeparator,
            fractionalPart.count == 3,
            !integerPart.isEmpty {
-            return integerPart + fractionalPart
+            MoneyInputTrace.log(
+                "parse rejected raw=\(text) locale=\(locale.identifier) reason=ambiguous_single_separator"
+            )
+            return nil
         }
 
         let normalizedIntegerPart = integerPart.isEmpty ? "0" : integerPart
@@ -3629,11 +3638,17 @@ struct AddTransactionView: View {
                         .pickerStyle(.menu)
                     }
                     
-                    Section(L10n.text("transaction.conversion", lang: uiLanguageCode)) {
-                        TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $transferAmountText)
-                            .keyboardType(.decimalPad)
-                            .onChange(of: transferAmountText) {
-                                transferAmountText = SecurityValidation.boundedAmountInput(transferAmountText)
+                Section(L10n.text("transaction.conversion", lang: uiLanguageCode)) {
+                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $transferAmountText)
+                        .keyboardType(.numbersAndPunctuation)
+                        .accessibilityIdentifier("add_transaction.transfer_amount")
+                        .onChange(of: transferAmountText) {
+                                let rawValue = transferAmountText
+                                let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
+                                MoneyInputTrace.log(
+                                    "field=add_transaction.transfer_amount raw=\(rawValue) bounded=\(boundedValue)"
+                                )
+                                transferAmountText = boundedValue
                                 isTransferAmountManuallyEdited = true
                             }
 
@@ -3677,9 +3692,15 @@ struct AddTransactionView: View {
                 
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
                     TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                        .keyboardType(.decimalPad)
+                        .keyboardType(.numbersAndPunctuation)
+                        .accessibilityIdentifier("add_transaction.amount")
                         .onChange(of: amountText) {
-                            amountText = SecurityValidation.boundedAmountInput(amountText)
+                            let rawValue = amountText
+                            let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
+                            MoneyInputTrace.log(
+                                "field=add_transaction.amount raw=\(rawValue) bounded=\(boundedValue)"
+                            )
+                            amountText = boundedValue
                         }
 
                     if let calculatedAmountResult {
@@ -3751,6 +3772,7 @@ struct AddTransactionView: View {
                             dismiss()
                         }
                     }
+                    .accessibilityIdentifier("add_transaction.save")
                     .disabled(!canSave)
                 }
             }
@@ -3796,6 +3818,9 @@ struct AddTransactionView: View {
     private func saveTransaction() -> Bool {
         guard let amount = parsedAmount else { return false }
         guard selectedWalletID != nil else { return false }
+        MoneyInputTrace.log(
+            "save_transaction rawAmountText=\(amountText) parsedAmount=\(amount) transactionType=\(transactionType.rawValue)"
+        )
         
         let selectedCategory = categories.first { $0.persistentModelID == selectedCategoryID }
         let selectedWallet = self.selectedWallet
@@ -3838,6 +3863,7 @@ struct AddTransactionView: View {
 
             return true
         } catch {
+            MoneyInputTrace.log("save_transaction failed rawAmountText=\(amountText) error=\(error)")
             return false
         }
     }
@@ -4081,9 +4107,14 @@ struct AddWalletView: View {
                 
                 Section(L10n.text("wallet.balance", lang: uiLanguageCode)) {
                     TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $balanceText)
-                        .keyboardType(.decimalPad)
+                        .keyboardType(.numbersAndPunctuation)
                         .onChange(of: balanceText) {
-                            balanceText = SecurityValidation.boundedAmountInput(balanceText)
+                            let rawValue = balanceText
+                            let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
+                            MoneyInputTrace.log(
+                                "field=wallet.balance raw=\(rawValue) bounded=\(boundedValue)"
+                            )
+                            balanceText = boundedValue
                         }
 
                     if let calculatedBalanceResult {
@@ -4462,7 +4493,6 @@ struct SettingsView: View {
     @State private var showDeleteAccountConfirmation = false
     @State private var showDeleteAccountError = false
     @State private var deleteAccountErrorMessage = ""
-    @State private var deleteAccountDiagnosticsMessage = ""
     @State private var isDeletingAccount = false
     @State private var showPaywall = false
     @State private var showEmailAuthSheet = false
@@ -4971,12 +5001,12 @@ struct SettingsView: View {
                 Text(L10n.text("settings.account.delete_message", lang: uiLanguageCode))
             }
             .alert(
-                L10n.text("settings.account.delete_error_title", lang: uiLanguageCode),
+                deleteAccountAlertTitle,
                 isPresented: $showDeleteAccountError
             ) {
                 Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
             } message: {
-                Text(composedDeleteAccountErrorMessage)
+                Text(deleteAccountErrorMessage)
             }
             .onAppear {
                 if appCountryCode.isEmpty {
@@ -5220,8 +5250,24 @@ struct SettingsView: View {
     private func deleteCurrentAccount() {
         guard !isDeletingAccount else { return }
         guard let accountID = currentSetupAccountID() else {
-            deleteAccountErrorMessage = L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
-            deleteAccountDiagnosticsMessage = ""
+            deleteAccountErrorMessage = buildDeleteAccountFailureAlertMessage(
+                baseMessage: L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode),
+                diagnostics: """
+                hasCachedSession=false
+                hasCachedToken=false
+                tokenLooksLikeJWT=false
+                tokenMatchesPublishableKey=false
+                cachedIssuer=none
+                cachedAudience=none
+                cachedExp=none
+                cachedProjectRefMatches=false
+                tokenSource=none
+                hasAuthorizationHeader=false
+                requestURL=none
+                statusCode=none
+                responseBodySnippet=none
+                """
+            )
             showDeleteAccountError = true
             return
         }
@@ -5247,7 +5293,7 @@ struct SettingsView: View {
                         "deleteCurrentAccount flow backend success bucket=\(accountBucket, privacy: .public)"
                     )
                     isDeletingAccount = false
-                    deleteAccountDiagnosticsMessage = ""
+                    deleteAccountErrorMessage = ""
                     completeDeletedAccountCleanup(accountID: accountID)
                 }
             } catch {
@@ -5257,8 +5303,10 @@ struct SettingsView: View {
                         "deleteCurrentAccount flow failure bucket=\(accountBucket, privacy: .public) error=\(String(describing: error), privacy: .public)"
                     )
                     isDeletingAccount = false
-                    deleteAccountErrorMessage = localizedAccountDeletionError(error)
-                    deleteAccountDiagnosticsMessage = diagnostics ?? ""
+                    deleteAccountErrorMessage = buildDeleteAccountFailureAlertMessage(
+                        baseMessage: localizedAccountDeletionError(error),
+                        diagnostics: diagnostics
+                    )
                     showDeleteAccountError = true
                 }
             }
@@ -5528,10 +5576,18 @@ struct SettingsView: View {
         }
     }
 
-    private var composedDeleteAccountErrorMessage: String {
-        let details = deleteAccountDiagnosticsMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !details.isEmpty else { return deleteAccountErrorMessage }
-        return "\(deleteAccountErrorMessage)\n\nDelete diagnostics\n\(details)"
+    private var deleteAccountAlertTitle: String {
+        "DELETE DEBUG v2 • " + L10n.text("settings.account.delete_error_title", lang: uiLanguageCode)
+    }
+
+    private func buildDeleteAccountFailureAlertMessage(baseMessage: String, diagnostics: String) -> String {
+        """
+        DELETE DEBUG v2
+
+        \(baseMessage)
+
+        \(diagnostics)
+        """
     }
 
     private func sanitizedDeleteAccountServerMessage(_ message: String?) -> String? {
@@ -5676,9 +5732,14 @@ struct AddRecurringRuleView: View {
 
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
                     TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                        .keyboardType(.decimalPad)
+                        .keyboardType(.numbersAndPunctuation)
                         .onChange(of: amountText) {
-                            amountText = SecurityValidation.boundedAmountInput(amountText)
+                            let rawValue = amountText
+                            let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
+                            MoneyInputTrace.log(
+                                "field=recurring.amount raw=\(rawValue) bounded=\(boundedValue)"
+                            )
+                            amountText = boundedValue
                         }
 
                     if let calculatedAmountResult {

@@ -705,12 +705,9 @@ enum EmailAuthManager {
         return Data(base64Encoded: base64)
     }
 
-    static func latestDeleteAccountDiagnosticsText() async -> String? {
-        guard let snapshot = await deleteAccountDiagnosticsStore.get() else {
-            return nil
-        }
+    static func latestDeleteAccountDiagnosticsText() async -> String {
+        let snapshot = await deleteAccountDiagnosticsStore.get() ?? .empty
         let lines = snapshot.userVisibleLines
-        guard !lines.isEmpty else { return nil }
         return lines.joined(separator: "\n")
     }
 }
@@ -749,6 +746,22 @@ private struct DeleteAccountDiagnosticsSnapshot {
     var requestURL: String?
     var statusCode: Int?
     var responseBodySnippet: String?
+
+    static let empty = DeleteAccountDiagnosticsSnapshot(
+        hasCachedSession: false,
+        hasCachedToken: false,
+        tokenLooksLikeJWT: false,
+        tokenMatchesPublishableKey: false,
+        cachedIssuer: "none",
+        cachedAudience: "none",
+        cachedExp: "none",
+        cachedProjectRefMatches: false,
+        tokenSource: "none",
+        hasAuthorizationHeader: false,
+        requestURL: "none",
+        statusCode: nil,
+        responseBodySnippet: "none"
+    )
 
     var userVisibleLines: [String] {
         [

@@ -167,7 +167,10 @@ struct QuickExpenseView: View {
                 }
             }
             .onChange(of: amountText) {
-                amountText = SecurityValidation.boundedAmountInput(amountText)
+                let rawValue = amountText
+                let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
+                MoneyInputTrace.log("field=quick_expense.amount raw=\(rawValue) bounded=\(boundedValue)")
+                amountText = boundedValue
             }
             .onChange(of: note) {
                 note = SecurityValidation.boundedMultilineInput(
@@ -197,7 +200,8 @@ struct QuickExpenseView: View {
 
             TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
                 .focused($isAmountFieldFocused)
-                .keyboardType(.decimalPad)
+                .keyboardType(.numbersAndPunctuation)
+                .accessibilityIdentifier("quick_expense.amount")
                 .font(.system(size: 40, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 18)
                 .padding(.vertical, 20)

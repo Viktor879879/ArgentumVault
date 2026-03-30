@@ -28,6 +28,9 @@ struct ArgentumVaultTests {
             SecurityValidation.sanitizeNote(String(repeating: "x", count: 501))
             == String(repeating: "x", count: SecurityValidation.maxNoteLength)
         )
+        #expect(SecurityValidation.boundedAmountInput("15,88") == "15,88")
+        #expect(SecurityValidation.boundedAmountInput("1000,25") == "1000,25")
+        #expect(SecurityValidation.boundedAmountInput("1 000,25") == "1 000,25")
     }
 
     @Test func validatesAmountsAndBackupMetadata() async throws {
@@ -59,10 +62,14 @@ struct ArgentumVaultTests {
 
     @Test func rejectsMalformedMixedSeparatorAmounts() async throws {
         let swedish = Locale(identifier: "sv_SE")
+        let us = Locale(identifier: "en_US")
+        let german = Locale(identifier: "de_DE")
 
         #expect(DecimalFormatter.parse("1,000.2,5", locale: swedish) == nil)
         #expect(DecimalFormatter.parse("1.000,2.5", locale: swedish) == nil)
         #expect(DecimalFormatter.parse("1..25", locale: swedish) == nil)
+        #expect(DecimalFormatter.parse("1,588", locale: us) == nil)
+        #expect(DecimalFormatter.parse("1.588", locale: german) == nil)
     }
 
     @Test func exportsDecimalAmountsWithoutFloatingPointConversion() async throws {
