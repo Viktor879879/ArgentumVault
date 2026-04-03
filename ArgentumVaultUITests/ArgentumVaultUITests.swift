@@ -152,7 +152,7 @@ final class ArgentumVaultUITests: XCTestCase {
 
         let historyTrace = app.staticTexts["money_runtime_debug.history"]
         XCTAssertTrue(historyTrace.waitForExistence(timeout: 10))
-        XCTAssertTrue(historyTrace.label.contains("MI-737380fe"))
+        XCTAssertTrue(historyTrace.label.contains("MI-RUNTIME-TRACE-1"))
         XCTAssertTrue(historyTrace.label.contains("save=10,55"))
         XCTAssertTrue(historyTrace.label.contains("parsed=10.55"))
         XCTAssertTrue(historyTrace.label.contains("stored=10.55"))
@@ -219,7 +219,7 @@ final class ArgentumVaultUITests: XCTestCase {
     private func assertRuntimeDebugPanel(path: String, in app: XCUIApplication) {
         let marker = app.staticTexts["money_runtime_debug.marker"]
         XCTAssertTrue(marker.waitForExistence(timeout: 10))
-        XCTAssertEqual(marker.label, "Runtime: MI-737380fe")
+        XCTAssertEqual(marker.label, "Runtime: MI-RUNTIME-TRACE-1")
 
         let pathLabel = app.staticTexts["money_runtime_debug.path"]
         XCTAssertTrue(pathLabel.waitForExistence(timeout: 10))

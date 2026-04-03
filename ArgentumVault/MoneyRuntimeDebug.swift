@@ -22,7 +22,7 @@ final class MoneyRuntimeDebugStore: ObservableObject {
 }
 
 enum MoneyRuntimeDebug {
-    static let marker = "MI-737380fe"
+    static let marker = "MI-RUNTIME-TRACE-1"
 
     static func recordLiveField(path: String, text: String, parsed: Decimal?) {
         Task { @MainActor in
