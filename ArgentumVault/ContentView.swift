@@ -4971,12 +4971,20 @@ struct SettingsView: View {
                 Text(L10n.text("settings.account.delete_message", lang: uiLanguageCode))
             }
             .alert(
-                L10n.text("settings.account.delete_error_title", lang: uiLanguageCode),
+                "XYZ DELETE BUILD 777",
                 isPresented: $showDeleteAccountError
             ) {
                 Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
             } message: {
-                Text(composedDeleteAccountErrorMessage)
+                Text(
+                    """
+                    XYZ DELETE BUILD 777
+
+                    \(deleteAccountErrorMessage)
+
+                    \(deleteAccountDiagnosticsMessage.trimmingCharacters(in: .whitespacesAndNewlines))
+                    """
+                )
             }
             .onAppear {
                 if appCountryCode.isEmpty {
