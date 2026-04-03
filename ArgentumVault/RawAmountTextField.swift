@@ -162,28 +162,68 @@ struct RawAmountTextField: UIViewRepresentable {
 
         func updateRuntimeMarker(on textField: UITextField) {
             guard let runtimeMarker = parent.runtimeMarker, !runtimeMarker.isEmpty else {
-                textField.rightView = nil
-                textField.rightViewMode = .never
+                textField.leftView = nil
+                textField.leftViewMode = .never
                 return
             }
 
+            let container: UIView
             let label: UILabel
-            if let existingLabel = textField.rightView as? UILabel {
+
+            if let existingContainer = textField.leftView,
+               let existingLabel = existingContainer.subviews.compactMap({ $0 as? UILabel }).first {
+                container = existingContainer
                 label = existingLabel
             } else {
-                label = UILabel()
-                label.font = UIFont.monospacedSystemFont(ofSize: 10, weight: .semibold)
-                label.textColor = .systemOrange
-                label.numberOfLines = 1
-                label.isAccessibilityElement = true
-                label.accessibilityIdentifier = "raw_amount_field.runtime_marker"
-                textField.rightView = label
+                let badgeLabel = UILabel()
+                badgeLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .bold)
+                badgeLabel.textColor = .white
+                badgeLabel.numberOfLines = 1
+                badgeLabel.isAccessibilityElement = true
+                badgeLabel.accessibilityIdentifier = "raw_amount_field.runtime_marker"
+
+                let badgeContainer = UIView(frame: .zero)
+                badgeContainer.backgroundColor = .systemRed
+                badgeContainer.layer.cornerRadius = 6
+                badgeContainer.layer.masksToBounds = true
+                badgeContainer.addSubview(badgeLabel)
+
+                container = badgeContainer
+                label = badgeLabel
             }
 
             label.text = runtimeMarker
             label.accessibilityLabel = runtimeMarker
             label.sizeToFit()
-            textField.rightViewMode = .always
+
+            let horizontalPadding: CGFloat = 8
+            let verticalPadding: CGFloat = 4
+            let labelFrame = CGRect(
+                x: horizontalPadding,
+                y: verticalPadding,
+                width: label.bounds.width,
+                height: label.bounds.height
+            )
+            label.frame = labelFrame
+            container.frame = CGRect(
+                x: 0,
+                y: 0,
+                width: labelFrame.maxX + horizontalPadding + 8,
+                height: max(30, labelFrame.maxY + verticalPadding)
+            )
+
+            if container !== textField.leftView {
+                let spacer = UIView(frame: CGRect(x: 0, y: 0, width: container.frame.width + 8, height: container.frame.height))
+                container.frame.origin.x = 0
+                container.frame.origin.y = max(0, (spacer.frame.height - container.frame.height) / 2)
+                spacer.addSubview(container)
+                textField.leftView = spacer
+            } else if let spacer = textField.leftView {
+                spacer.frame = CGRect(x: 0, y: 0, width: container.frame.width + 8, height: container.frame.height)
+                container.frame.origin = CGPoint(x: 0, y: max(0, (spacer.frame.height - container.frame.height) / 2))
+            }
+
+            textField.leftViewMode = .always
         }
     }
 }
@@ -202,6 +242,17 @@ struct RawAmountTextField: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            if let runtimeMarker, !runtimeMarker.isEmpty {
+                Text(runtimeMarker)
+                    .font(.caption2.monospaced().bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.red)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .accessibilityIdentifier("raw_amount_field.runtime_marker")
+            }
+
             Group {
                 if let isFocused {
                     TextField(placeholder, text: $text)
@@ -209,13 +260,6 @@ struct RawAmountTextField: View {
                 } else {
                     TextField(placeholder, text: $text)
                 }
-            }
-
-            if let runtimeMarker, !runtimeMarker.isEmpty {
-                Text(runtimeMarker)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.orange)
-                    .accessibilityIdentifier("raw_amount_field.runtime_marker")
             }
         }
         .accessibilityIdentifier(accessibilityIdentifier ?? "")
