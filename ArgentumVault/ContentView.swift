@@ -84,6 +84,7 @@ private enum TransactionHistoryDateFilterMode: String, CaseIterable, Identifiabl
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var quickExpenseRouter: QuickExpenseRouter
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
     @AppStorage("appCountryCode") private var appCountryCode = ""
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
@@ -93,6 +94,7 @@ struct ContentView: View {
     @AppStorage("forceShowOnboardingOnce_v4") private var forceShowOnboardingOnce = true
     @AppStorage("didRunMigration_v1") private var didRunMigration = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -104,7 +106,6 @@ struct ContentView: View {
 #endif
     @StateObject private var rateService = RateService()
     @StateObject private var subscriptionManager = SubscriptionManager()
-    @State private var showSplash = true
     @State private var showOnboarding = false
     @State private var showGlobalPaywall = false
     @State private var selectedTab: RootTab = .home
@@ -122,7 +123,20 @@ struct ContentView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var rootContentState: RootContentState {
+        if !isAccountConnected {
+            return .accountSetup
+        }
+        if !didCompleteInitialSetup && baseCurrencyCode.isEmpty {
+            return .preferencesSetup
+        }
+        if baseCurrencyCode.isEmpty {
+            return .baseCurrencySetup
+        }
+        return .main
     }
     
     var body: some View {
@@ -172,12 +186,6 @@ struct ContentView: View {
                 }
                 .animation(.easeInOut(duration: 0.2), value: subscriptionManager.hasProAccess)
             }
-            
-            if showSplash {
-                SplashView()
-                    .transition(.opacity)
-                    .zIndex(1)
-            }
         }
         .dismissKeyboardOnTap()
         .tint(interactiveTint)
@@ -194,6 +202,7 @@ struct ContentView: View {
         .task {
 #if DEBUG
             if debugResetFirstLaunchOnce {
+                activeAccountIdentifier = ""
                 didCompleteInitialSetup = false
                 didShowOnboarding = false
                 forceShowOnboardingOnce = true
@@ -206,6 +215,7 @@ struct ContentView: View {
                 emailUserEmail = ""
                 emailUserID = ""
                 authMethod = ""
+                AccountIdentityPolicy.clearPersistedAccountIdentifier(reason: "ContentView.debugResetFirstLaunchOnce")
                 debugResetFirstLaunchOnce = false
             }
 #endif
@@ -222,6 +232,13 @@ struct ContentView: View {
                     authMethod = "apple"
                 }
             }
+            activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+                authMethod: authMethod,
+                appleUserID: appleUserID,
+                emailUserEmail: emailUserEmail,
+                emailUserID: emailUserID,
+                reason: "ContentView.task.syncCurrentAccount"
+            ) ?? ""
             if appCountryCode.isEmpty {
                 appCountryCode = CountryCatalog.defaultCountryCode()
             }
@@ -240,17 +257,17 @@ struct ContentView: View {
             await subscriptionManager.start()
         }
         .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                withAnimation(.easeOut(duration: 0.25)) {
-                    showSplash = false
-                }
-                if didCompleteInitialSetup && (!didShowOnboarding || forceShowOnboardingOnce) {
+            AppFlowDiagnostics.launch("ContentView appear rootState=\(rootContentState.rawValue)")
+            presentPendingQuickExpenseIfNeeded()
+            if didCompleteInitialSetup && (!didShowOnboarding || forceShowOnboardingOnce) {
+                DispatchQueue.main.async {
                     showOnboarding = true
                 }
             }
         }
         .onChange(of: didCompleteInitialSetup) {
             guard didCompleteInitialSetup else { return }
+            presentPendingQuickExpenseIfNeeded()
             if !didShowOnboarding || forceShowOnboardingOnce {
                 showOnboarding = true
             }
@@ -266,6 +283,9 @@ struct ContentView: View {
             PaywallView(lang: uiLanguageCode)
                 .environmentObject(subscriptionManager)
         }
+        .sheet(isPresented: $isShowingQuickExpense) {
+            QuickExpenseView(defaultCurrencyCode: baseCurrencyCode)
+        }
         .environment(\.locale, currentLocale)
         .preferredColorScheme(AppTheme.colorScheme(from: appTheme))
         .environmentObject(subscriptionManager)
@@ -277,19 +297,26 @@ struct ContentView: View {
         }
         return Locale(identifier: appLanguageCode)
     }
-}
 
-struct SplashView: View {
-    var body: some View {
-        ZStack {
-            // Keep splash background stable in dark mode to avoid black frame around a light logo asset.
-            Color(hex: "ECECECFF")
-                .ignoresSafeArea()
-            Image("LaunchLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 240, height: 240)
+    private var canPresentQuickExpense: Bool {
+        isAccountConnected
+            && didCompleteInitialSetup
+            && !baseCurrencyCode.isEmpty
+            && !showOnboarding
+            && !showGlobalPaywall
+    }
+
+    private func presentPendingQuickExpenseIfNeeded() {
+        guard quickExpenseRouter.pendingRequestID != nil else { return }
+        guard !isShowingQuickExpense else {
+            quickExpenseRouter.consumePendingRequest()
+            return
         }
+        guard canPresentQuickExpense else { return }
+
+        selectedRootTab = .home
+        quickExpenseRouter.consumePendingRequest()
+        isShowingQuickExpense = true
     }
 }
 
@@ -341,6 +368,7 @@ struct FirstLaunchSetupView: View {
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
     @AppStorage("appCountryCode") private var appCountryCode = ""
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -383,7 +411,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -603,7 +631,17 @@ struct FirstLaunchSetupView: View {
     }
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
+        AppFlowDiagnostics.launch(
+            "FirstLaunchSetupView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         isAppleAuthInProgress = false
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: credential.user,
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "FirstLaunchSetupView.applyAppleAccountSession"
+        ) ?? ""
         appleUserID = credential.user
         emailUserID = session.userID
         emailUserEmail = session.email
@@ -636,6 +674,16 @@ struct FirstLaunchSetupView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
+        AppFlowDiagnostics.launch(
+            "FirstLaunchSetupView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: "",
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "FirstLaunchSetupView.handleEmailAuthSuccess"
+        ) ?? ""
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -718,18 +766,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {
@@ -3788,8 +3825,9 @@ struct AddTransactionView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(L10n.text("common.save", lang: uiLanguageCode)) {
-                        saveTransaction()
-                        dismiss()
+                        if saveTransaction() {
+                            dismiss()
+                        }
                     }
                     .disabled(!canSave)
                 }
@@ -3833,89 +3871,53 @@ struct AddTransactionView: View {
         return appLanguageCode
     }
     
-    private func saveTransaction() {
-        guard let amount = parsedAmount else { return }
-        guard selectedWalletID != nil else { return }
+    private func saveTransaction() -> Bool {
+        guard let amount = parsedAmount else { return false }
+        guard selectedWalletID != nil else { return false }
         
         let selectedCategory = categories.first { $0.persistentModelID == selectedCategoryID }
         let selectedWallet = self.selectedWallet
         let selectedTransferWallet = self.selectedTransferWallet
         
         if transactionType == .transfer {
-            guard selectedTransferWallet != nil, parsedTransferAmount != nil else { return }
+            guard selectedTransferWallet != nil, parsedTransferAmount != nil else { return false }
         } else if selectedCategory == nil {
-            return
+            return false
         }
-        
-        let walletNameSnapshot = selectedWallet?.name
-        let walletKindRaw = selectedWallet?.kind.rawValue
-        let walletColorHexSnapshot = selectedWallet?.colorHex
-        let transferWalletNameSnapshot = selectedTransferWallet?.name
-        let transferWalletCurrencyCode = selectedTransferWallet?.assetCode
-        let transferWalletKindRaw = selectedTransferWallet?.kind.rawValue
-        let transferWalletColorHexSnapshot = selectedTransferWallet?.colorHex
-        let transferAmount = parsedTransferAmount
-        let safeDate = SecurityValidation.sanitizeDate(date)
-        let safeNote = SecurityValidation.sanitizeNote(note)
-        let safePhotoData = SecurityValidation.sanitizePhotoData(photoData)
-        let safeCurrencyCode =
-            SecurityValidation.sanitizeAssetCode(currencyCode)
-            ?? selectedWallet.flatMap { SecurityValidation.sanitizeAssetCode($0.assetCode) }
-            ?? SecurityValidation.sanitizeAssetCode(defaultCurrencyCode)
-            ?? "USD"
-        let safeWalletNameSnapshot = SecurityValidation.sanitizeOptionalSnapshotLabel(walletNameSnapshot)
-        let safeTransferWalletNameSnapshot = SecurityValidation.sanitizeOptionalSnapshotLabel(transferWalletNameSnapshot)
-        let safeTransferWalletCurrencyCode = transferWalletCurrencyCode.flatMap(SecurityValidation.sanitizeAssetCode)
-        
-        applyWalletChanges(
-            newWallet: selectedWallet,
-            newTransferWallet: selectedTransferWallet,
-            newAmount: amount,
-            newTransferAmount: transferAmount,
-            newType: transactionType
+
+        let originalState = TransactionEffectSnapshot(
+            walletID: originalWalletID,
+            transferWalletID: originalTransferWalletID,
+            amount: originalAmount,
+            transferAmount: originalTransferAmount,
+            type: originalType
         )
-        
-        if let transaction {
-            transaction.amount = amount
-            transaction.currencyCode = safeCurrencyCode
-            transaction.date = safeDate
-            transaction.note = safeNote
-            transaction.type = transactionType
-            transaction.photoData = safePhotoData
-            transaction.walletNameSnapshot = safeWalletNameSnapshot
-            transaction.walletKindRaw = walletKindRaw
-            transaction.walletColorHexSnapshot = walletColorHexSnapshot
-            transaction.transferWalletNameSnapshot = safeTransferWalletNameSnapshot
-            transaction.transferWalletCurrencyCode = safeTransferWalletCurrencyCode
-            transaction.transferWalletKindRaw = transferWalletKindRaw
-            transaction.transferWalletColorHexSnapshot = transferWalletColorHexSnapshot
-            transaction.transferAmount = transferAmount
-            transaction.category = selectedCategory
-            transaction.wallet = selectedWallet
-            transaction.transferWallet = selectedTransferWallet
-        } else {
-            let newTransaction = Transaction(
-                amount: amount,
-                currencyCode: safeCurrencyCode,
-                date: safeDate,
-                note: safeNote,
-                type: transactionType,
-                walletNameSnapshot: safeWalletNameSnapshot,
-                walletKindRaw: walletKindRaw,
-                walletColorHexSnapshot: walletColorHexSnapshot,
-                transferWalletNameSnapshot: safeTransferWalletNameSnapshot,
-                transferWalletCurrencyCode: safeTransferWalletCurrencyCode,
-                transferWalletKindRaw: transferWalletKindRaw,
-                transferWalletColorHexSnapshot: transferWalletColorHexSnapshot,
-                transferAmount: transferAmount,
-                photoData: safePhotoData,
-                category: selectedCategory,
-                wallet: selectedWallet,
-                transferWallet: selectedTransferWallet
+
+        do {
+            _ = try TransactionMutationService.save(
+                request: TransactionSaveRequest(
+                    transaction: transaction,
+                    originalState: transaction == nil ? nil : originalState,
+                    amount: amount,
+                    currencyCode: currencyCode,
+                    date: date,
+                    note: note,
+                    transactionType: transactionType,
+                    category: selectedCategory,
+                    wallet: selectedWallet,
+                    transferWallet: selectedTransferWallet,
+                    transferAmount: parsedTransferAmount,
+                    photoData: photoData,
+                    defaultCurrencyCode: defaultCurrencyCode
+                ),
+                modelContext: modelContext,
+                availableWallets: wallets
             )
-            modelContext.insert(newTransaction)
+
+            return true
+        } catch {
+            return false
         }
-        try? modelContext.save()
     }
     
     private func loadPhoto() async {
@@ -4053,59 +4055,6 @@ struct AddTransactionView: View {
         isTransferAmountManuallyEdited = false
     }
     
-    private func applyWalletChanges(
-        newWallet: Wallet?,
-        newTransferWallet: Wallet?,
-        newAmount: Decimal,
-        newTransferAmount: Decimal?,
-        newType: TransactionType
-    ) {
-        if let originalWalletID,
-           let originalWallet = wallets.first(where: { $0.persistentModelID == originalWalletID }) {
-            let originalTransferWallet = wallets.first(where: { $0.persistentModelID == originalTransferWalletID })
-            applyEffect(
-                sourceWallet: originalWallet,
-                destinationWallet: originalTransferWallet,
-                amount: originalAmount,
-                destinationAmount: originalTransferAmount,
-                type: originalType,
-                reversing: true
-            )
-        }
-        
-        if let newWallet {
-            applyEffect(
-                sourceWallet: newWallet,
-                destinationWallet: newTransferWallet,
-                amount: newAmount,
-                destinationAmount: newTransferAmount ?? newAmount,
-                type: newType,
-                reversing: false
-            )
-        }
-    }
-    
-    private func applyEffect(
-        sourceWallet: Wallet?,
-        destinationWallet: Wallet?,
-        amount: Decimal,
-        destinationAmount: Decimal,
-        type: TransactionType,
-        reversing: Bool
-    ) {
-        switch type {
-        case .expense:
-            guard let sourceWallet else { return }
-            sourceWallet.balance += reversing ? amount : -amount
-        case .income:
-            guard let sourceWallet else { return }
-            sourceWallet.balance += reversing ? -amount : amount
-        case .transfer:
-            guard let sourceWallet, let destinationWallet else { return }
-            sourceWallet.balance += reversing ? amount : -amount
-            destinationWallet.balance += reversing ? -destinationAmount : destinationAmount
-        }
-    }
 }
 
 struct AddWalletView: View {
@@ -4565,6 +4514,7 @@ struct SettingsView: View {
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("appTheme") private var appTheme = "system"
     @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -4632,7 +4582,7 @@ struct SettingsView: View {
     }
 
     private var isAccountConnected: Bool {
-        !appleUserID.isEmpty || !emailUserEmail.isEmpty
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
     var body: some View {
@@ -5196,7 +5146,17 @@ struct SettingsView: View {
     }
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
+        AppFlowDiagnostics.launch(
+            "SettingsView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         isAppleAuthInProgress = false
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: credential.user,
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "SettingsView.applyAppleAccountSession"
+        ) ?? ""
         appleUserID = credential.user
         emailUserID = session.userID
         emailUserEmail = session.email
@@ -5249,6 +5209,9 @@ struct SettingsView: View {
     }
 
     private func clearAccountSession() {
+        AppFlowDiagnostics.launch("SettingsView clearAccountSession")
+        activeAccountIdentifier = ""
+        AccountIdentityPolicy.clearPersistedAccountIdentifier(reason: "SettingsView.clearAccountSession")
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -5268,6 +5231,16 @@ struct SettingsView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
+        AppFlowDiagnostics.launch(
+            "SettingsView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: "",
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "SettingsView.handleEmailAuthSuccess"
+        ) ?? ""
         appleUserID = ""
         appleUserEmail = ""
         appleUserName = ""
@@ -5290,18 +5263,7 @@ struct SettingsView: View {
 
 #if DEBUG
     private var currentBackupAccountIdentifier: String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountIdentityPolicy.currentCloudBackupAccountIdentifier()
     }
 
     private func refreshCloudDebugStatus() {
@@ -5319,6 +5281,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
+        AppFlowDiagnostics.sync("SettingsView forceCloudBackupNow accountIdentifier=\(accountIdentifier)")
         guard let token = startCloudDebugOperation(message: "Running forced backup...") else {
             return
         }
@@ -5343,6 +5306,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
+        AppFlowDiagnostics.sync("SettingsView restoreFromCloudNow accountIdentifier=\(accountIdentifier)")
         guard let token = startCloudDebugOperation(message: "Trying restore from remote...") else {
             return
         }
@@ -5421,18 +5385,7 @@ struct SettingsView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        switch authMethod {
-        case "apple":
-            return SetupProfileStore.appleAccountID(appleUserID)
-                ?? SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        case "email":
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        default:
-            if let appleAccountID = SetupProfileStore.appleAccountID(appleUserID) {
-                return appleAccountID
-            }
-            return SetupProfileStore.emailAccountID(emailUserEmail, userID: emailUserID)
-        }
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {

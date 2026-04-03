@@ -72,6 +72,14 @@
 "transaction.add_comment" = "Add a comment";
 "transaction.select_photo" = "Select Photo";
 "transaction.untagged" = "Untagged";
+"quick_expense.title" = "New Expense";
+"quick_expense.recent_categories" = "Recent categories";
+"quick_expense.note_optional" = "Note (optional)";
+"quick_expense.no_wallets" = "Create a wallet first to add an expense.";
+"quick_expense.no_categories" = "Create an expense category first.";
+"quick_expense.amount_invalid" = "Enter a valid amount greater than 0.";
+"quick_expense.save_failed_title" = "Couldn't save expense";
+"quick_expense.save_failed" = "The expense couldn't be saved right now. Try again.";
 "wallet.new" = "New Wallet";
 "wallet.edit" = "Edit Wallet";
 "wallet.name_placeholder" = "Wallet name";
@@ -92,6 +100,12 @@
 "a11y.add_total_currency" = "Add total currency";
 "a11y.add_folder" = "Add folder";
 "a11y.add_wallet" = "Add wallet";
+"a11y.quick_expense_amount" = "Expense amount";
+"a11y.quick_expense_wallet" = "Expense wallet";
+"a11y.quick_expense_category" = "Expense category";
+"a11y.quick_expense_note" = "Expense note";
+"a11y.quick_expense_cancel" = "Cancel quick expense";
+"a11y.quick_expense_save" = "Save quick expense";
 "common.name" = "Name";
 "common.type" = "Type";
 "common.color" = "Color";

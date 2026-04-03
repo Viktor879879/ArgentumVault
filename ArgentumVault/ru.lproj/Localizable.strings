@@ -72,6 +72,14 @@
 "transaction.add_comment" = "Добавить комментарий";
 "transaction.select_photo" = "Выбрать фото";
 "transaction.untagged" = "Без тега";
+"quick_expense.title" = "Новая трата";
+"quick_expense.recent_categories" = "Недавние категории";
+"quick_expense.note_optional" = "Комментарий (необязательно)";
+"quick_expense.no_wallets" = "Сначала создайте кошелёк, чтобы добавить расход.";
+"quick_expense.no_categories" = "Сначала создайте категорию расхода.";
+"quick_expense.amount_invalid" = "Введите корректную сумму больше 0.";
+"quick_expense.save_failed_title" = "Не удалось сохранить расход";
+"quick_expense.save_failed" = "Сейчас не удалось сохранить расход. Попробуйте ещё раз.";
 "wallet.new" = "Новый кошелёк";
 "wallet.edit" = "Изменить кошелёк";
 "wallet.name_placeholder" = "Название кошелька";
@@ -92,6 +100,12 @@
 "a11y.add_total_currency" = "Добавить валюту итога";
 "a11y.add_folder" = "Добавить папку";
 "a11y.add_wallet" = "Добавить кошелёк";
+"a11y.quick_expense_amount" = "Сумма расхода";
+"a11y.quick_expense_wallet" = "Кошелёк расхода";
+"a11y.quick_expense_category" = "Категория расхода";
+"a11y.quick_expense_note" = "Комментарий к расходу";
+"a11y.quick_expense_cancel" = "Отменить быстрое добавление расхода";
+"a11y.quick_expense_save" = "Сохранить быстрый расход";
 "common.name" = "Название";
 "common.type" = "Тип";
 "common.color" = "Цвет";
