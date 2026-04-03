@@ -37,6 +37,7 @@ struct RawAmountTextField: UIViewRepresentable {
         textField.accessibilityIdentifier = accessibilityIdentifier
         textField.accessibilityLabel = accessibilityLabel
         textField.adjustsFontForContentSizeCategory = true
+        textField.inputAccessoryView = context.coordinator.makeInputAccessoryView()
         context.coordinator.updateRuntimeMarker(on: textField)
         if let font {
             textField.font = font
@@ -51,6 +52,7 @@ struct RawAmountTextField: UIViewRepresentable {
 
     func updateUIView(_ uiView: UITextField, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.currentTextField = uiView
         MoneyInputTrace.log(
             "field=\(traceID) ui_component=RawAmountTextField runtime_marker=\(runtimeMarker ?? "") phase=update_ui_view"
         )
@@ -82,9 +84,48 @@ struct RawAmountTextField: UIViewRepresentable {
     final class Coordinator: NSObject, UITextFieldDelegate {
         var parent: RawAmountTextField
         var isApplyingChange = false
+        weak var currentTextField: UITextField?
 
         init(parent: RawAmountTextField) {
             self.parent = parent
+        }
+
+        func makeInputAccessoryView() -> UIView {
+            let toolbar = UIToolbar()
+            toolbar.sizeToFit()
+
+            let commaButton = UIBarButtonItem(
+                title: ",",
+                style: .plain,
+                target: self,
+                action: #selector(insertCommaFromAccessory)
+            )
+            commaButton.accessibilityIdentifier = "raw_amount_field.insert_comma"
+            commaButton.accessibilityLabel = "Insert comma"
+
+            let dotButton = UIBarButtonItem(
+                title: ".",
+                style: .plain,
+                target: self,
+                action: #selector(insertDotFromAccessory)
+            )
+            dotButton.accessibilityIdentifier = "raw_amount_field.insert_dot"
+            dotButton.accessibilityLabel = "Insert dot"
+
+            let flexibleLeading = UIBarButtonItem(systemItem: .flexibleSpace)
+            let flexibleTrailing = UIBarButtonItem(systemItem: .flexibleSpace)
+
+            let doneButton = UIBarButtonItem(
+                title: "Done",
+                style: .done,
+                target: self,
+                action: #selector(dismissKeyboardFromAccessory)
+            )
+            doneButton.accessibilityIdentifier = "raw_amount_field.done"
+            doneButton.accessibilityLabel = "Done"
+
+            toolbar.items = [commaButton, dotButton, flexibleLeading, flexibleTrailing, doneButton]
+            return toolbar
         }
 
         func textField(
@@ -125,6 +166,7 @@ struct RawAmountTextField: UIViewRepresentable {
         }
 
         func textFieldDidBeginEditing(_ textField: UITextField) {
+            currentTextField = textField
             parent.isFocused?.wrappedValue = true
             MoneyInputTrace.log(
                 "field=\(parent.traceID) ui_component=RawAmountTextField runtime_marker=\(parent.runtimeMarker ?? "") focus=began"
@@ -132,6 +174,9 @@ struct RawAmountTextField: UIViewRepresentable {
         }
 
         func textFieldDidEndEditing(_ textField: UITextField) {
+            if currentTextField === textField {
+                currentTextField = nil
+            }
             parent.isFocused?.wrappedValue = false
             MoneyInputTrace.log("field=\(parent.traceID) focus=ended")
         }
@@ -224,6 +269,58 @@ struct RawAmountTextField: UIViewRepresentable {
             }
 
             textField.leftViewMode = .always
+        }
+
+        @objc
+        private func insertCommaFromAccessory() {
+            insertAccessoryText(",")
+        }
+
+        @objc
+        private func insertDotFromAccessory() {
+            insertAccessoryText(".")
+        }
+
+        @objc
+        private func dismissKeyboardFromAccessory() {
+            currentTextField?.resignFirstResponder()
+        }
+
+        private func insertAccessoryText(_ insertedText: String) {
+            guard let textField = currentTextField else { return }
+
+            let currentText = textField.text ?? ""
+            let range: NSRange
+
+            if let selectedTextRange = textField.selectedTextRange {
+                let location = textField.offset(from: textField.beginningOfDocument, to: selectedTextRange.start)
+                let length = textField.offset(from: selectedTextRange.start, to: selectedTextRange.end)
+                range = NSRange(location: location, length: length)
+            } else {
+                range = NSRange(location: (currentText as NSString).length, length: 0)
+            }
+
+            guard let swiftRange = Range(range, in: currentText) else { return }
+
+            let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: insertedText)
+            let boundedText = SecurityValidation.boundedAmountInput(proposedRaw)
+            let desiredCaretOffset = min(
+                range.location + (insertedText as NSString).length,
+                (boundedText as NSString).length
+            )
+
+            MoneyInputTrace.log(
+                """
+                field=\(parent.traceID) accessory_insert \
+                current=\(currentText) \
+                inserted=\(insertedText) \
+                range=\(range.location),\(range.length) \
+                proposed_raw=\(proposedRaw) \
+                bounded=\(boundedText)
+                """
+            )
+
+            apply(text: boundedText, to: textField, desiredCaretOffset: desiredCaretOffset)
         }
     }
 }

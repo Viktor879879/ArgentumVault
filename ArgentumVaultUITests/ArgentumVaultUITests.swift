@@ -182,6 +182,25 @@ final class ArgentumVaultUITests: XCTestCase {
     }
 
     @MainActor
+    func testAddTransactionAccessoryProvidesDotKey() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        openAddTransaction(in: app)
+        selectWalletAndCategory(in: app)
+
+        let amountField = amountField(in: app)
+        amountField.typeText("10")
+        tapAccessoryButton("raw_amount_field.insert_dot", in: app)
+        amountField.typeText("55")
+
+        XCTAssertEqual(amountField.value as? String, "10.55")
+
+        saveAddTransaction(in: app)
+        XCTAssertTrue(app.staticTexts["-10.55 SEK"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
     func testEditTransactionUsesInFieldRuntimeMarker() throws {
         let app = configuredAppForMoneyInputTrace()
         app.launch()
@@ -271,6 +290,12 @@ final class ArgentumVaultUITests: XCTestCase {
         let markerLabel = app.staticTexts["raw_amount_field.runtime_marker"]
         XCTAssertTrue(markerLabel.waitForExistence(timeout: 10))
         XCTAssertEqual(markerLabel.label, marker)
+    }
+
+    private func tapAccessoryButton(_ identifier: String, in app: XCUIApplication) {
+        let button = app.buttons[identifier]
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        button.tap()
     }
 
     private func typeAmountCharacterByCharacter(_ amount: String, into field: XCUIElement) {
