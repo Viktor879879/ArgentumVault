@@ -3180,6 +3180,38 @@ struct TransactionRow: View {
         if transaction.category?.type == .income { return .income }
         return .expense
     }
+
+    private var displayedAmountText: String {
+        let rendered: String
+        if isNumbersHidden {
+            rendered = "*** \(transaction.currencyCode)"
+        } else if transactionTypeResolved == .transfer {
+            rendered = "\(DecimalFormatter.string(from: transaction.amount, maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)"
+        } else {
+            let sign = signedAmount >= 0 ? "+" : "-"
+            rendered = "\(sign)\(DecimalFormatter.string(from: absDecimal(signedAmount), maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)"
+        }
+
+        MoneyInputTrace.log(
+            """
+            transaction_row_display syncID=\(transaction.syncID) \
+            amount=\(transaction.amount) \
+            type=\(transactionTypeResolved.rawValue) \
+            rendered=\(rendered)
+            """
+        )
+        return rendered
+    }
+
+    private var amountForegroundStyle: Color {
+        if isNumbersHidden {
+            return .primary
+        }
+        if transactionTypeResolved == .transfer {
+            return .secondary
+        }
+        return signedAmount >= 0 ? .green : .red
+    }
     
     var body: some View {
         HStack {
@@ -3199,21 +3231,9 @@ struct TransactionRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                if isNumbersHidden {
-                    Text("*** \(transaction.currencyCode)")
-                        .font(.headline)
-                } else {
-                    if transactionTypeResolved == .transfer {
-                        Text("\(DecimalFormatter.string(from: transaction.amount, maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        let sign = signedAmount >= 0 ? "+" : "-"
-                        Text("\(sign)\(DecimalFormatter.string(from: absDecimal(signedAmount), maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)")
-                            .font(.headline)
-                            .foregroundStyle(signedAmount >= 0 ? .green : .red)
-                    }
-                }
+                Text(displayedAmountText)
+                    .font(.headline)
+                    .foregroundStyle(amountForegroundStyle)
                 Text(formattedDate(transaction.date))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -3538,6 +3558,7 @@ struct AddTransactionView: View {
     @State private var isTransferAmountManuallyEdited: Bool
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var photoData: Data?
+    @State private var amountInputSetCounter: Int = 0
     
     private let originalWalletID: PersistentIdentifier?
     private let originalTransferWalletID: PersistentIdentifier?
@@ -3602,6 +3623,41 @@ struct AddTransactionView: View {
         guard let value = AmountExpressionEvaluator.evaluate(transferAmountText), value > 0 else { return nil }
         return value
     }
+
+    private var tracedAmountTextBinding: Binding<String> {
+        Binding(
+            get: { amountText },
+            set: { newValue in
+                amountInputSetCounter += 1
+                MoneyInputTrace.log(
+                    """
+                    field=add_transaction.amount binding_setter \
+                    step=\(amountInputSetCounter) \
+                    old=\(amountText) \
+                    new=\(newValue)
+                    """
+                )
+                amountText = newValue
+            }
+        )
+    }
+
+    private var tracedTransferAmountTextBinding: Binding<String> {
+        Binding(
+            get: { transferAmountText },
+            set: { newValue in
+                MoneyInputTrace.log(
+                    """
+                    field=add_transaction.transfer_amount binding_setter \
+                    old=\(transferAmountText) \
+                    new=\(newValue)
+                    """
+                )
+                transferAmountText = newValue
+                isTransferAmountManuallyEdited = true
+            }
+        )
+    }
     
     var body: some View {
         NavigationStack {
@@ -3639,18 +3695,12 @@ struct AddTransactionView: View {
                     }
                     
                 Section(L10n.text("transaction.conversion", lang: uiLanguageCode)) {
-                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $transferAmountText)
-                        .keyboardType(.numbersAndPunctuation)
-                        .accessibilityIdentifier("add_transaction.transfer_amount")
-                        .onChange(of: transferAmountText) {
-                                let rawValue = transferAmountText
-                                let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
-                                MoneyInputTrace.log(
-                                    "field=add_transaction.transfer_amount raw=\(rawValue) bounded=\(boundedValue)"
-                                )
-                                transferAmountText = boundedValue
-                                isTransferAmountManuallyEdited = true
-                            }
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: tracedTransferAmountTextBinding,
+                        traceID: "add_transaction.transfer_amount",
+                        accessibilityIdentifier: "add_transaction.transfer_amount"
+                    )
 
                         if let calculatedTransferAmountResult {
                             Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedTransferAmountResult, maximumFractionDigits: 6))")
@@ -3691,17 +3741,12 @@ struct AddTransactionView: View {
                 }
                 
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
-                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                        .keyboardType(.numbersAndPunctuation)
-                        .accessibilityIdentifier("add_transaction.amount")
-                        .onChange(of: amountText) {
-                            let rawValue = amountText
-                            let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
-                            MoneyInputTrace.log(
-                                "field=add_transaction.amount raw=\(rawValue) bounded=\(boundedValue)"
-                            )
-                            amountText = boundedValue
-                        }
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: tracedAmountTextBinding,
+                        traceID: "add_transaction.amount",
+                        accessibilityIdentifier: "add_transaction.amount"
+                    )
 
                     if let calculatedAmountResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
@@ -3802,6 +3847,7 @@ struct AddTransactionView: View {
                 applyAutoTransferAmount(force: !isTransferAmountManuallyEdited)
             }
             .onChange(of: amountText) {
+                MoneyInputTrace.log("field=add_transaction.amount after_on_change text=\(amountText)")
                 applyAutoTransferAmount(force: !isTransferAmountManuallyEdited)
             }
         }
@@ -4106,16 +4152,11 @@ struct AddWalletView: View {
                 }
                 
                 Section(L10n.text("wallet.balance", lang: uiLanguageCode)) {
-                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $balanceText)
-                        .keyboardType(.numbersAndPunctuation)
-                        .onChange(of: balanceText) {
-                            let rawValue = balanceText
-                            let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
-                            MoneyInputTrace.log(
-                                "field=wallet.balance raw=\(rawValue) bounded=\(boundedValue)"
-                            )
-                            balanceText = boundedValue
-                        }
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: $balanceText,
+                        traceID: "wallet.balance"
+                    )
 
                     if let calculatedBalanceResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedBalanceResult, maximumFractionDigits: 6))")
@@ -5731,16 +5772,11 @@ struct AddRecurringRuleView: View {
                 }
 
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
-                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                        .keyboardType(.numbersAndPunctuation)
-                        .onChange(of: amountText) {
-                            let rawValue = amountText
-                            let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
-                            MoneyInputTrace.log(
-                                "field=recurring.amount raw=\(rawValue) bounded=\(boundedValue)"
-                            )
-                            amountText = boundedValue
-                        }
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: $amountText,
+                        traceID: "recurring.amount"
+                    )
 
                     if let calculatedAmountResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")

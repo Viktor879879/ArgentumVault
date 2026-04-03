@@ -89,34 +89,8 @@ final class ArgentumVaultUITests: XCTestCase {
         let app = configuredAppForMoneyInputTrace()
         app.launch()
 
-        let addTransactionButton = app.buttons["Add transaction"]
-        XCTAssertTrue(addTransactionButton.waitForExistence(timeout: 10))
-        addTransactionButton.tap()
-
-        let walletPicker = app.buttons["Select wallet"]
-        XCTAssertTrue(walletPicker.waitForExistence(timeout: 10))
-        walletPicker.tap()
-        XCTAssertTrue(app.buttons["UI Test Wallet"].waitForExistence(timeout: 5))
-        app.buttons["UI Test Wallet"].tap()
-
-        let categoryPicker = app.buttons["Select tag"]
-        XCTAssertTrue(categoryPicker.waitForExistence(timeout: 10))
-        categoryPicker.tap()
-        XCTAssertTrue(app.buttons["Groceries"].waitForExistence(timeout: 5))
-        app.buttons["Groceries"].tap()
-
-        let amountField = app.textFields["add_transaction.amount"]
-        XCTAssertTrue(amountField.waitForExistence(timeout: 10))
-        amountField.tap()
-        amountField.typeText("15,88")
-
-        let fieldValue = amountField.value as? String
-        XCTAssertEqual(fieldValue, "15,88")
-
-        let saveButton = app.buttons["add_transaction.save"]
-        XCTAssertTrue(saveButton.isEnabled)
-        saveButton.tap()
-
+        enterAddTransactionAmount("15,88", in: app)
+        saveAddTransaction(in: app)
         XCTAssertTrue(app.staticTexts["-15.88 SEK"].waitForExistence(timeout: 10))
     }
 
@@ -125,19 +99,37 @@ final class ArgentumVaultUITests: XCTestCase {
         let app = configuredAppForMoneyInputTrace()
         app.launch()
 
-        let addTransactionButton = app.buttons["Add transaction"]
-        XCTAssertTrue(addTransactionButton.waitForExistence(timeout: 10))
-        addTransactionButton.tap()
+        openAddTransaction(in: app)
 
-        let amountField = app.textFields["add_transaction.amount"]
-        XCTAssertTrue(amountField.waitForExistence(timeout: 10))
-        amountField.tap()
-        amountField.typeText("1000,25")
+        let amountField = amountField(in: app)
+        typeAmountCharacterByCharacter("1000,25", into: amountField)
 
         let fieldValue = amountField.value as? String
         XCTAssertEqual(fieldValue, "1000,25")
         XCTAssertNotEqual(fieldValue, "1,000.25")
         XCTAssertNotEqual(fieldValue, "1 000,25")
+    }
+
+    @MainActor
+    func testAddTransactionAcceptsCommaDecimalSeparator_10_55() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        enterAddTransactionAmount("10,55", in: app)
+        saveAddTransaction(in: app)
+
+        XCTAssertTrue(app.staticTexts["-10.55 SEK"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testAddTransactionAcceptsCommaDecimalSeparator_0_99() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        enterAddTransactionAmount("0,99", in: app)
+        saveAddTransaction(in: app)
+
+        XCTAssertTrue(app.staticTexts["-0.99 SEK"].waitForExistence(timeout: 10))
     }
 
     private func configuredAppForMoneyInputTrace() -> XCUIApplication {
@@ -160,6 +152,59 @@ final class ArgentumVaultUITests: XCTestCase {
         app.launchEnvironment["ARGENTUM_UI_TEST_SEED"] = "1"
         app.launchEnvironment["ARGENTUM_MONEY_TRACE"] = "1"
         return app
+    }
+
+    @MainActor
+    private func enterAddTransactionAmount(_ amount: String, in app: XCUIApplication) {
+        openAddTransaction(in: app)
+        selectWalletAndCategory(in: app)
+        typeAmountCharacterByCharacter(amount, into: amountField(in: app))
+    }
+
+    @MainActor
+    private func openAddTransaction(in app: XCUIApplication) {
+        let addTransactionButton = app.buttons["Add transaction"]
+        XCTAssertTrue(addTransactionButton.waitForExistence(timeout: 10))
+        addTransactionButton.tap()
+    }
+
+    @MainActor
+    private func selectWalletAndCategory(in app: XCUIApplication) {
+        let walletPicker = app.buttons["Select wallet"]
+        XCTAssertTrue(walletPicker.waitForExistence(timeout: 10))
+        walletPicker.tap()
+        XCTAssertTrue(app.buttons["UI Test Wallet"].waitForExistence(timeout: 5))
+        app.buttons["UI Test Wallet"].tap()
+
+        let categoryPicker = app.buttons["Select tag"]
+        XCTAssertTrue(categoryPicker.waitForExistence(timeout: 10))
+        categoryPicker.tap()
+        XCTAssertTrue(app.buttons["Groceries"].waitForExistence(timeout: 5))
+        app.buttons["Groceries"].tap()
+    }
+
+    private func amountField(in app: XCUIApplication) -> XCUIElement {
+        let amountField = app.textFields["add_transaction.amount"]
+        XCTAssertTrue(amountField.waitForExistence(timeout: 10))
+        amountField.tap()
+        return amountField
+    }
+
+    private func typeAmountCharacterByCharacter(_ amount: String, into field: XCUIElement) {
+        var expectedValue = ""
+        for character in amount {
+            let fragment = String(character)
+            field.typeText(fragment)
+            expectedValue.append(character)
+            XCTAssertEqual(field.value as? String, expectedValue)
+        }
+    }
+
+    @MainActor
+    private func saveAddTransaction(in app: XCUIApplication) {
+        let saveButton = app.buttons["add_transaction.save"]
+        XCTAssertTrue(saveButton.isEnabled)
+        saveButton.tap()
     }
 
     private func addDebugArtifacts(from app: XCUIApplication, named name: String) {

@@ -1,5 +1,8 @@
 import SwiftData
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct QuickExpenseView: View {
     @Environment(\.dismiss) private var dismiss
@@ -166,12 +169,6 @@ struct QuickExpenseView: View {
                     applySelectionDefaults()
                 }
             }
-            .onChange(of: amountText) {
-                let rawValue = amountText
-                let boundedValue = SecurityValidation.boundedAmountInput(rawValue)
-                MoneyInputTrace.log("field=quick_expense.amount raw=\(rawValue) bounded=\(boundedValue)")
-                amountText = boundedValue
-            }
             .onChange(of: note) {
                 note = SecurityValidation.boundedMultilineInput(
                     note,
@@ -198,11 +195,16 @@ struct QuickExpenseView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                .focused($isAmountFieldFocused)
-                .keyboardType(.numbersAndPunctuation)
+            RawAmountTextField(
+                placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                text: $amountText,
+                traceID: "quick_expense.amount",
+                accessibilityIdentifier: "quick_expense.amount",
+                accessibilityLabel: L10n.text("a11y.quick_expense_amount", lang: uiLanguageCode),
+                font: amountFieldFont,
+                isFocused: $isAmountFieldFocused
+            )
                 .accessibilityIdentifier("quick_expense.amount")
-                .font(.system(size: 40, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 18)
                 .padding(.vertical, 20)
                 .background(.background)
@@ -211,7 +213,6 @@ struct QuickExpenseView: View {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .stroke(amountValidationMessage == nil ? Color.clear : Color.red.opacity(0.5), lineWidth: 1)
                 }
-                .accessibilityLabel(L10n.text("a11y.quick_expense_amount", lang: uiLanguageCode))
 
             if let amountValidationMessage {
                 Text(amountValidationMessage)
@@ -410,6 +411,16 @@ struct QuickExpenseView: View {
             isAmountFieldFocused = true
         }
     }
+
+#if canImport(UIKit)
+    private var amountFieldFont: UIFont {
+        let baseFont = UIFont.systemFont(ofSize: 40, weight: .semibold)
+        let roundedDescriptor = baseFont.fontDescriptor.withDesign(.rounded) ?? baseFont.fontDescriptor
+        return UIFont(descriptor: roundedDescriptor, size: 40)
+    }
+#else
+    private var amountFieldFont: Any? { nil }
+#endif
 
     private func saveExpense() {
         guard !isSaving else { return }
