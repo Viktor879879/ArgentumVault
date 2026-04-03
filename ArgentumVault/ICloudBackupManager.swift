@@ -1079,6 +1079,7 @@ enum ICloudBackupManager {
                     typeRaw: rule.type.rawValue,
                     frequencyRaw: rule.frequency.rawValue,
                     interval: rule.interval,
+                    monthDaysCSV: rule.monthDaysCSV,
                     nextRunDate: rule.nextRunDate,
                     note: rule.note,
                     isActive: rule.isActive,
@@ -1452,6 +1453,7 @@ private struct RecurringRuleRecord: Codable {
     let typeRaw: String
     let frequencyRaw: String
     let interval: Int
+    let monthDaysCSV: String?
     let nextRunDate: Date
     let note: String?
     let isActive: Bool

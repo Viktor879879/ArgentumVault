@@ -42,14 +42,7 @@ private struct AppBootstrapView: View {
     @State private var containerEpoch = 0
     @State private var lastKnownAccountIdentifier: String?
     @State private var activeStoreAccountIdentifier: String?
-    @State private var backupPipelineContainerIdentifier: ObjectIdentifier?
-    @State private var backupPipelineAccountIdentifier: String?
-    @State private var backupPipelineRequestedCloud = false
-    @State private var backupPipelineUsesCloudKit = false
-
-    init() {
-        AppFlowDiagnostics.launch("AppBootstrapView init")
-    }
+    @State private var backupPipelineSignature: String?
 
     var body: some View {
         Group {
@@ -410,39 +403,33 @@ private struct AppBootstrapView: View {
         usesCloudKit: Bool,
         container: ModelContainer
     ) {
-        let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier()
-        let containerIdentifier = ObjectIdentifier(container)
-        if backupPipelineContainerIdentifier == containerIdentifier,
-           backupPipelineAccountIdentifier == accountIdentifier,
-           backupPipelineRequestedCloud == requestedCloud,
-           backupPipelineUsesCloudKit == usesCloudKit {
-            AppFlowDiagnostics.sync(
-                "configureICloudBackupPipeline skipped unchanged configuration requestedCloud=\(requestedCloud) usesCloudKit=\(usesCloudKit) accountIdentifier=\(accountIdentifier ?? "nil")"
-            )
+        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
+            startupBackupTask?.cancel()
+            startupBackupTask = nil
+            periodicBackupTask?.cancel()
+            periodicBackupTask = nil
+            lastKnownAccountIdentifier = nil
+            backupPipelineSignature = nil
+            return
+        }
+        lastKnownAccountIdentifier = accountIdentifier
+
+        let pipelineSignature = makeBackupPipelineSignature(
+            requestedCloud: requestedCloud,
+            usesCloudKit: usesCloudKit,
+            container: container,
+            accountIdentifier: accountIdentifier
+        )
+
+        if backupPipelineSignature == pipelineSignature {
             return
         }
 
-        AppFlowDiagnostics.sync(
-            "configureICloudBackupPipeline requestedCloud=\(requestedCloud) usesCloudKit=\(usesCloudKit) accountIdentifier=\(accountIdentifier ?? "nil") runtimeAutoRestore=false"
-        )
         startupBackupTask?.cancel()
         startupBackupTask = nil
         periodicBackupTask?.cancel()
         periodicBackupTask = nil
-        saveTriggeredBackupTask?.cancel()
-        saveTriggeredBackupTask = nil
-
-        backupPipelineContainerIdentifier = containerIdentifier
-        backupPipelineAccountIdentifier = accountIdentifier
-        backupPipelineRequestedCloud = requestedCloud
-        backupPipelineUsesCloudKit = usesCloudKit
-
-        guard requestedCloud, let accountIdentifier else {
-            lastKnownAccountIdentifier = nil
-            AppFlowDiagnostics.sync("configureICloudBackupPipeline disabled")
-            return
-        }
-        lastKnownAccountIdentifier = accountIdentifier
+        backupPipelineSignature = pipelineSignature
 
         startupBackupTask = Task { @MainActor [container] in
             let startupDelay: UInt64 = usesCloudKit ? 10_000_000_000 : 350_000_000
@@ -468,11 +455,63 @@ private struct AppBootstrapView: View {
                 return
             }
 
-            let hasLocalData = !hasCloudSnapshot && ICloudBackupManager.hasCoreFinancialData(in: backupContext)
-            if hasLocalData && !hasCloudSnapshot {
-                AppFlowDiagnostics.sync(
-                    "startup backup task seeding initial cloud snapshot accountIdentifier=\(accountIdentifier)"
-                )
+            let hasLocalCoreData = ICloudBackupManager.hasCoreFinancialData(in: ModelContext(container))
+
+            // Do not run destructive snapshot restore against a live foreground UI that already
+            // has local data-bound views on screen. Gate only the empty-store bootstrap/login path.
+            if scenePhase == .active && hasLocalCoreData {
+                let backupContext = ModelContext(container)
+                if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                    modelContext: backupContext,
+                    didRestore: false
+                ) {
+                    ICloudBackupManager.backupIfNeeded(
+                        modelContext: backupContext,
+                        accountIdentifier: accountIdentifier,
+                        force: false
+                    )
+                }
+                return
+            }
+
+            if scenePhase == .active && !hasLocalCoreData {
+                isSwitchingContainer = true
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else {
+                    isSwitchingContainer = false
+                    return
+                }
+                guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
+                    isSwitchingContainer = false
+                    return
+                }
+            }
+
+            let restoreContext = ModelContext(container)
+            let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
+                modelContext: restoreContext,
+                accountIdentifier: accountIdentifier
+            )) ?? false
+
+            guard !Task.isCancelled else { return }
+            guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
+                return
+            }
+            if didRestore {
+                refreshViewTreeAfterRestore()
+                return
+            }
+
+            if scenePhase == .active && !hasLocalCoreData {
+                isSwitchingContainer = false
+            }
+
+            let backupContext = ModelContext(container)
+            if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                modelContext: backupContext,
+                didRestore: didRestore
+            ) {
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
                     accountIdentifier: accountIdentifier,
@@ -497,17 +536,13 @@ private struct AppBootstrapView: View {
                 ) else {
                     continue
                 }
-                let backupContext = ModelContext(container)
-                let hasPendingChanges = ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: latestAccountIdentifier)
-                let hasCloudSnapshot = ICloudBackupManager.hasSuccessfulCloudBackup(accountIdentifier: latestAccountIdentifier)
-                let shouldSeedInitialSnapshot = !hasCloudSnapshot
-                    && ICloudBackupManager.hasCoreFinancialData(in: backupContext)
-                guard hasPendingChanges || shouldSeedInitialSnapshot else { continue }
-
-                if hasPendingChanges {
-                    AppFlowDiagnostics.sync("periodic sync uploading pending local changes accountIdentifier=\(latestAccountIdentifier)")
-                } else {
-                    AppFlowDiagnostics.sync("periodic sync seeding initial cloud snapshot accountIdentifier=\(latestAccountIdentifier)")
+                if ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: latestAccountIdentifier) {
+                    let backupContext = ModelContext(container)
+                    ICloudBackupManager.backupIfNeeded(
+                        modelContext: backupContext,
+                        accountIdentifier: latestAccountIdentifier,
+                        force: false
+                    )
                 }
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
@@ -542,7 +577,21 @@ private struct AppBootstrapView: View {
     @MainActor
     private func handleModelStoreDidRestore(_ notification: Notification) {
         let didRestore = (notification.userInfo?["restored"] as? Bool) ?? true
-        AppFlowDiagnostics.sync("Notification modelStoreDidRestore restored=\(didRestore)")
+        if didRestore {
+            refreshViewTreeAfterRestore()
+            return
+        }
+        isSwitchingContainer = false
+    }
+
+    @MainActor
+    private func refreshViewTreeAfterRestore() {
+        guard modelContainer != nil else {
+            isSwitchingContainer = false
+            return
+        }
+        containerEpoch += 1
+        isSwitchingContainer = false
     }
 
     @MainActor
@@ -620,6 +669,16 @@ private struct AppBootstrapView: View {
         guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
         guard StorageModePolicy.currentCloudBackupAccountIdentifier() == accountIdentifier else { return false }
         return true
+    }
+
+    private func makeBackupPipelineSignature(
+        requestedCloud: Bool,
+        usesCloudKit: Bool,
+        container: ModelContainer,
+        accountIdentifier: String
+    ) -> String {
+        let containerID = ObjectIdentifier(container)
+        return "\(requestedCloud)|\(usesCloudKit)|\(containerID)|\(accountIdentifier)"
     }
 
     @MainActor

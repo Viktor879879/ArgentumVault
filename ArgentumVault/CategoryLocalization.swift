@@ -172,33 +172,62 @@ enum CategoryLocalizationService {
     static func scheduleBackfillAll(modelContext: ModelContext, currentLanguageCode: String) {
         let descriptor = FetchDescriptor<Category>()
         guard let categories = try? modelContext.fetch(descriptor) else { return }
-        for category in categories where category.deletedAt == nil {
-            scheduleBackfill(for: category, modelContext: modelContext, currentLanguageCode: currentLanguageCode)
+        let container = modelContext.container
+        let syncIDs = categories
+            .filter { $0.deletedAt == nil && !$0.syncID.isEmpty }
+            .map(\.syncID)
+        for syncID in syncIDs {
+            scheduleBackfill(
+                syncID: syncID,
+                container: container,
+                currentLanguageCode: currentLanguageCode
+            )
         }
     }
 
     static func scheduleBackfill(for category: Category, modelContext: ModelContext, currentLanguageCode: String) {
-        let syncID = category.syncID
+        scheduleBackfill(
+            syncID: category.syncID,
+            container: modelContext.container,
+            currentLanguageCode: currentLanguageCode
+        )
+    }
+
+    private static func scheduleBackfill(
+        syncID: String,
+        container: ModelContainer,
+        currentLanguageCode: String
+    ) {
         guard !syncID.isEmpty, !inFlightSyncIDs.contains(syncID) else { return }
         inFlightSyncIDs.insert(syncID)
 
         Task { @MainActor in
             defer { inFlightSyncIDs.remove(syncID) }
-            await backfillCategory(syncID: syncID, modelContext: modelContext, currentLanguageCode: currentLanguageCode)
+            await backfillCategory(
+                syncID: syncID,
+                container: container,
+                currentLanguageCode: currentLanguageCode
+            )
         }
     }
 
-    private static func backfillCategory(syncID: String, modelContext: ModelContext, currentLanguageCode: String) async {
-        guard let category = fetchCategory(syncID: syncID, modelContext: modelContext) else { return }
+    private static func backfillCategory(
+        syncID: String,
+        container: ModelContainer,
+        currentLanguageCode: String
+    ) async {
+        let fetchContext = ModelContext(container)
+        guard let category = fetchCategory(syncID: syncID, modelContext: fetchContext) else { return }
 
         if CategoryLocalization.canonicalizeBuiltInCategoryIfNeeded(category) {
             category.updatedAt = Date()
-            try? modelContext.save()
+            try? fetchContext.save()
             return
         }
 
         let sourceText = category.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceText.isEmpty else { return }
+        let initialUpdatedAt = category.updatedAt
 
         let fallbackLanguageCode = CategoryLocalization.normalizedLanguageCode(currentLanguageCode)
         let sourceLanguageCode = CategoryLocalization.normalizedSourceLanguage(for: category)
@@ -232,20 +261,36 @@ enum CategoryLocalizationService {
             }
         }
 
-        let encodedLocalizedNames = CategoryLocalization.encodeLocalizedNames(localizedNames)
-        if category.sourceLanguageCode != sourceLanguageCode {
-            category.sourceLanguageCode = sourceLanguageCode
-            didChange = true
-        }
-        if category.localizedNamesJSON != encodedLocalizedNames {
-            category.localizedNamesJSON = encodedLocalizedNames
-            didChange = true
+        let saveContext = ModelContext(container)
+        guard let latestCategory = fetchCategory(syncID: syncID, modelContext: saveContext) else { return }
+        let latestSourceText = latestCategory.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard latestSourceText == sourceText, latestCategory.updatedAt == initialUpdatedAt else {
+            return
         }
 
-        if didChange {
-            category.updatedAt = Date()
-            try? modelContext.save()
+        var latestLocalizedNames = CategoryLocalization.decodeLocalizedNames(latestCategory.localizedNamesJSON)
+        if latestLocalizedNames[sourceLanguageCode] != sourceText {
+            latestLocalizedNames[sourceLanguageCode] = sourceText
         }
+        for (languageCode, translatedText) in localizedNames where languageCode != sourceLanguageCode {
+            guard !translatedText.isEmpty else { continue }
+            if latestLocalizedNames[languageCode] != translatedText {
+                latestLocalizedNames[languageCode] = translatedText
+            }
+        }
+
+        let encodedLocalizedNames = CategoryLocalization.encodeLocalizedNames(latestLocalizedNames)
+        if latestCategory.sourceLanguageCode != sourceLanguageCode {
+            latestCategory.sourceLanguageCode = sourceLanguageCode
+            didChange = true
+        }
+        if latestCategory.localizedNamesJSON != encodedLocalizedNames {
+            latestCategory.localizedNamesJSON = encodedLocalizedNames
+            didChange = true
+        }
+        guard didChange else { return }
+        latestCategory.updatedAt = Date()
+        try? saveContext.save()
     }
 
     private static func fetchCategory(syncID: String, modelContext: ModelContext) -> Category? {
