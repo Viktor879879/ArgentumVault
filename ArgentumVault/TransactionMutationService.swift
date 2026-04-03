@@ -120,6 +120,11 @@ enum TransactionMutationService {
             formatted=\(DecimalFormatter.string(from: savedTransaction.amount, maximumFractionDigits: 6))
             """
         )
+        MoneyRuntimeDebug.recordPersist(
+            syncID: savedTransaction.syncID,
+            amount: savedTransaction.amount,
+            currency: savedTransaction.currencyCode
+        )
         return savedTransaction
     }
 

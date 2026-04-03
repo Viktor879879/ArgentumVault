@@ -10,6 +10,7 @@ struct QuickExpenseView: View {
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("quickExpense.lastWalletSyncID") private var lastWalletSyncID = ""
     @AppStorage("quickExpense.lastCategorySyncID") private var lastCategorySyncID = ""
+    @ObservedObject private var moneyRuntimeDebug = MoneyRuntimeDebugStore.shared
 
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Wallet.name) private var wallets: [Wallet]
@@ -151,6 +152,11 @@ struct QuickExpenseView: View {
             }
             .task {
                 applySelectionDefaults()
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "QuickExpenseView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
                 await focusAmountField()
             }
             .onChange(of: wallets.count) {
@@ -168,6 +174,13 @@ struct QuickExpenseView: View {
                 if selectedCategory == nil {
                     applySelectionDefaults()
                 }
+            }
+            .onChange(of: amountText) {
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "QuickExpenseView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
             }
             .onChange(of: note) {
                 note = SecurityValidation.boundedMultilineInput(
@@ -213,6 +226,12 @@ struct QuickExpenseView: View {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .stroke(amountValidationMessage == nil ? Color.clear : Color.red.opacity(0.5), lineWidth: 1)
                 }
+
+            MoneyRuntimeDebugPanel(
+                runtimePath: "QuickExpenseView/RawAmountTextField",
+                fieldText: moneyRuntimeDebug.liveFieldText,
+                parsedText: moneyRuntimeDebug.liveParsedText
+            )
 
             if let amountValidationMessage {
                 Text(amountValidationMessage)
@@ -425,6 +444,11 @@ struct QuickExpenseView: View {
     private func saveExpense() {
         guard !isSaving else { return }
         guard let amount = parsedAmount, let wallet = selectedWallet, let category = selectedCategory else { return }
+        MoneyRuntimeDebug.recordSaveAttempt(
+            path: "QuickExpenseView/RawAmountTextField",
+            rawText: amountText,
+            parsed: amount
+        )
 
         isSaving = true
         saveErrorMessage = ""

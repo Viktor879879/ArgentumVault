@@ -3158,6 +3158,7 @@ struct TransactionRow: View {
     @AppStorage("isNumbersHidden") private var isNumbersHidden = false
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
+    @ObservedObject private var moneyRuntimeDebug = MoneyRuntimeDebugStore.shared
     
     private var signedAmount: Decimal {
         let inferredType: TransactionType = {
@@ -3200,6 +3201,7 @@ struct TransactionRow: View {
             rendered=\(rendered)
             """
         )
+        MoneyRuntimeDebug.recordRendered(syncID: transaction.syncID, rendered: rendered)
         return rendered
     }
 
@@ -3237,6 +3239,21 @@ struct TransactionRow: View {
                 Text(formattedDate(transaction.date))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if moneyRuntimeDebug.lastSavedSyncID == transaction.syncID {
+                    Text(
+                        """
+                        \(MoneyRuntimeDebug.marker) \
+                        save=\(moneyRuntimeDebug.lastSaveRawText) \
+                        parsed=\(moneyRuntimeDebug.lastSaveParsedText) \
+                        stored=\(moneyRuntimeDebug.lastPersistedText) \
+                        row=\(moneyRuntimeDebug.lastRenderedText)
+                        """
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("money_runtime_debug.history")
+                }
             }
         }
     }
@@ -3538,6 +3555,7 @@ struct AddTransactionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @ObservedObject private var moneyRuntimeDebug = MoneyRuntimeDebugStore.shared
     
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Wallet.name) private var wallets: [Wallet]
@@ -3747,6 +3765,11 @@ struct AddTransactionView: View {
                         traceID: "add_transaction.amount",
                         accessibilityIdentifier: "add_transaction.amount"
                     )
+                    MoneyRuntimeDebugPanel(
+                        runtimePath: "AddTransactionView/RawAmountTextField",
+                        fieldText: moneyRuntimeDebug.liveFieldText,
+                        parsedText: moneyRuntimeDebug.liveParsedText
+                    )
 
                     if let calculatedAmountResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
@@ -3831,6 +3854,11 @@ struct AddTransactionView: View {
             }
             .onAppear {
                 normalizeSelections()
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "AddTransactionView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
             }
             .onChange(of: transactionType) {
                 if transactionType == .transfer {
@@ -3848,6 +3876,11 @@ struct AddTransactionView: View {
             }
             .onChange(of: amountText) {
                 MoneyInputTrace.log("field=add_transaction.amount after_on_change text=\(amountText)")
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "AddTransactionView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
                 applyAutoTransferAmount(force: !isTransferAmountManuallyEdited)
             }
         }
@@ -3864,6 +3897,11 @@ struct AddTransactionView: View {
     private func saveTransaction() -> Bool {
         guard let amount = parsedAmount else { return false }
         guard selectedWalletID != nil else { return false }
+        MoneyRuntimeDebug.recordSaveAttempt(
+            path: "AddTransactionView/RawAmountTextField",
+            rawText: amountText,
+            parsed: amount
+        )
         MoneyInputTrace.log(
             "save_transaction rawAmountText=\(amountText) parsedAmount=\(amount) transactionType=\(transactionType.rawValue)"
         )

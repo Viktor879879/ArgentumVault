@@ -100,6 +100,7 @@ final class ArgentumVaultUITests: XCTestCase {
         app.launch()
 
         openAddTransaction(in: app)
+        assertRuntimeDebugPanel(path: "AddTransactionView/RawAmountTextField", in: app)
 
         let amountField = amountField(in: app)
         typeAmountCharacterByCharacter("1000,25", into: amountField)
@@ -130,6 +131,31 @@ final class ArgentumVaultUITests: XCTestCase {
         saveAddTransaction(in: app)
 
         XCTAssertTrue(app.staticTexts["-0.99 SEK"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
+    func testAddTransactionShowsRuntimeMarkerForAmountField() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        openAddTransaction(in: app)
+        assertRuntimeDebugPanel(path: "AddTransactionView/RawAmountTextField", in: app)
+    }
+
+    @MainActor
+    func testAddTransactionHistoryShowsSavedRuntimeTrace() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        enterAddTransactionAmount("10,55", in: app)
+        saveAddTransaction(in: app)
+
+        let historyTrace = app.staticTexts["money_runtime_debug.history"]
+        XCTAssertTrue(historyTrace.waitForExistence(timeout: 10))
+        XCTAssertTrue(historyTrace.label.contains("MI-737380fe"))
+        XCTAssertTrue(historyTrace.label.contains("save=10,55"))
+        XCTAssertTrue(historyTrace.label.contains("parsed=10.55"))
+        XCTAssertTrue(historyTrace.label.contains("stored=10.55"))
     }
 
     private func configuredAppForMoneyInputTrace() -> XCUIApplication {
@@ -188,6 +214,16 @@ final class ArgentumVaultUITests: XCTestCase {
         XCTAssertTrue(amountField.waitForExistence(timeout: 10))
         amountField.tap()
         return amountField
+    }
+
+    private func assertRuntimeDebugPanel(path: String, in app: XCUIApplication) {
+        let marker = app.staticTexts["money_runtime_debug.marker"]
+        XCTAssertTrue(marker.waitForExistence(timeout: 10))
+        XCTAssertEqual(marker.label, "Runtime: MI-737380fe")
+
+        let pathLabel = app.staticTexts["money_runtime_debug.path"]
+        XCTAssertTrue(pathLabel.waitForExistence(timeout: 10))
+        XCTAssertEqual(pathLabel.label, "Path: \(path)")
     }
 
     private func typeAmountCharacterByCharacter(_ amount: String, into field: XCUIElement) {
