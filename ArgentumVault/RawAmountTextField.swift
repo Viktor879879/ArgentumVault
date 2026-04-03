@@ -9,6 +9,7 @@ struct RawAmountTextField: UIViewRepresentable {
     let traceID: String
     var accessibilityIdentifier: String?
     var accessibilityLabel: String?
+    var runtimeMarker: String?
     var font: UIFont?
     var isFocused: FocusState<Bool>.Binding?
 
@@ -18,6 +19,9 @@ struct RawAmountTextField: UIViewRepresentable {
 
     func makeUIView(context: Context) -> UITextField {
         let textField = UITextField(frame: .zero)
+        MoneyInputTrace.log(
+            "field=\(traceID) ui_component=RawAmountTextField runtime_marker=\(runtimeMarker ?? "") phase=make_ui_view"
+        )
         textField.delegate = context.coordinator
         textField.keyboardType = .numbersAndPunctuation
         textField.autocorrectionType = .no
@@ -33,6 +37,7 @@ struct RawAmountTextField: UIViewRepresentable {
         textField.accessibilityIdentifier = accessibilityIdentifier
         textField.accessibilityLabel = accessibilityLabel
         textField.adjustsFontForContentSizeCategory = true
+        context.coordinator.updateRuntimeMarker(on: textField)
         if let font {
             textField.font = font
         }
@@ -46,9 +51,13 @@ struct RawAmountTextField: UIViewRepresentable {
 
     func updateUIView(_ uiView: UITextField, context: Context) {
         context.coordinator.parent = self
+        MoneyInputTrace.log(
+            "field=\(traceID) ui_component=RawAmountTextField runtime_marker=\(runtimeMarker ?? "") phase=update_ui_view"
+        )
         uiView.placeholder = placeholder
         uiView.accessibilityIdentifier = accessibilityIdentifier
         uiView.accessibilityLabel = accessibilityLabel
+        context.coordinator.updateRuntimeMarker(on: uiView)
         if let font {
             uiView.font = font
         }
@@ -117,7 +126,9 @@ struct RawAmountTextField: UIViewRepresentable {
 
         func textFieldDidBeginEditing(_ textField: UITextField) {
             parent.isFocused?.wrappedValue = true
-            MoneyInputTrace.log("field=\(parent.traceID) focus=began")
+            MoneyInputTrace.log(
+                "field=\(parent.traceID) ui_component=RawAmountTextField runtime_marker=\(parent.runtimeMarker ?? "") focus=began"
+            )
         }
 
         func textFieldDidEndEditing(_ textField: UITextField) {
@@ -148,6 +159,32 @@ struct RawAmountTextField: UIViewRepresentable {
             guard let position = textField.position(from: start, offset: safeOffset) else { return }
             textField.selectedTextRange = textField.textRange(from: position, to: position)
         }
+
+        func updateRuntimeMarker(on textField: UITextField) {
+            guard let runtimeMarker = parent.runtimeMarker, !runtimeMarker.isEmpty else {
+                textField.rightView = nil
+                textField.rightViewMode = .never
+                return
+            }
+
+            let label: UILabel
+            if let existingLabel = textField.rightView as? UILabel {
+                label = existingLabel
+            } else {
+                label = UILabel()
+                label.font = UIFont.monospacedSystemFont(ofSize: 10, weight: .semibold)
+                label.textColor = .systemOrange
+                label.numberOfLines = 1
+                label.isAccessibilityElement = true
+                label.accessibilityIdentifier = "raw_amount_field.runtime_marker"
+                textField.rightView = label
+            }
+
+            label.text = runtimeMarker
+            label.accessibilityLabel = runtimeMarker
+            label.sizeToFit()
+            textField.rightViewMode = .always
+        }
     }
 }
 
@@ -159,16 +196,26 @@ struct RawAmountTextField: View {
     let traceID: String
     var accessibilityIdentifier: String?
     var accessibilityLabel: String?
+    var runtimeMarker: String?
     var font: Any?
     var isFocused: FocusState<Bool>.Binding?
 
     var body: some View {
-        Group {
-            if let isFocused {
-                TextField(placeholder, text: $text)
-                    .focused(isFocused)
-            } else {
-                TextField(placeholder, text: $text)
+        HStack(spacing: 8) {
+            Group {
+                if let isFocused {
+                    TextField(placeholder, text: $text)
+                        .focused(isFocused)
+                } else {
+                    TextField(placeholder, text: $text)
+                }
+            }
+
+            if let runtimeMarker, !runtimeMarker.isEmpty {
+                Text(runtimeMarker)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.orange)
+                    .accessibilityIdentifier("raw_amount_field.runtime_marker")
             }
         }
         .accessibilityIdentifier(accessibilityIdentifier ?? "")

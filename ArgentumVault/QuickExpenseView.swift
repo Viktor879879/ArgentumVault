@@ -214,6 +214,7 @@ struct QuickExpenseView: View {
                 traceID: "quick_expense.amount",
                 accessibilityIdentifier: "quick_expense.amount",
                 accessibilityLabel: L10n.text("a11y.quick_expense_amount", lang: uiLanguageCode),
+                runtimeMarker: "QE-AMOUNT",
                 font: amountFieldFont,
                 isFocused: $isAmountFieldFocused
             )

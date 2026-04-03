@@ -3717,7 +3717,8 @@ struct AddTransactionView: View {
                         placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
                         text: tracedTransferAmountTextBinding,
                         traceID: "add_transaction.transfer_amount",
-                        accessibilityIdentifier: "add_transaction.transfer_amount"
+                        accessibilityIdentifier: "add_transaction.transfer_amount",
+                        runtimeMarker: "AT-XFER"
                     )
 
                         if let calculatedTransferAmountResult {
@@ -3763,7 +3764,8 @@ struct AddTransactionView: View {
                         placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
                         text: tracedAmountTextBinding,
                         traceID: "add_transaction.amount",
-                        accessibilityIdentifier: "add_transaction.amount"
+                        accessibilityIdentifier: "add_transaction.amount",
+                        runtimeMarker: "AT-AMOUNT"
                     )
                     MoneyRuntimeDebugPanel(
                         runtimePath: "AddTransactionView/RawAmountTextField",
@@ -4193,7 +4195,8 @@ struct AddWalletView: View {
                     RawAmountTextField(
                         placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
                         text: $balanceText,
-                        traceID: "wallet.balance"
+                        traceID: "wallet.balance",
+                        runtimeMarker: "WALLET-BAL"
                     )
 
                     if let calculatedBalanceResult {
@@ -5813,7 +5816,8 @@ struct AddRecurringRuleView: View {
                     RawAmountTextField(
                         placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
                         text: $amountText,
-                        traceID: "recurring.amount"
+                        traceID: "recurring.amount",
+                        runtimeMarker: "RECUR-AMT"
                     )
 
                     if let calculatedAmountResult {
