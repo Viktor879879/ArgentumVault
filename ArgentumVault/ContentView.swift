@@ -2713,6 +2713,27 @@ enum DecimalFormatter {
     }
 }
 
+enum NewTransactionAmountInput {
+    nonisolated private static let commaVariants: Set<Character> = [",", "，", "、", "﹐", "､", "،"]
+    nonisolated private static let dotVariants: Set<Character> = [".", "．", "。", "｡", "﹒", "٫"]
+
+    nonisolated static func normalizeDecimalSeparators(in text: String) -> String {
+        String(text.map { character in
+            if commaVariants.contains(character) {
+                return ","
+            }
+            if dotVariants.contains(character) {
+                return "."
+            }
+            return character
+        })
+    }
+
+    nonisolated static func sanitizeEditingText(_ text: String) -> String {
+        SecurityValidation.boundedAmountInput(normalizeDecimalSeparators(in: text))
+    }
+}
+
 enum AmountExpressionEvaluator {
     private enum Token {
         case number(Decimal)
@@ -3622,8 +3643,12 @@ struct AddTransactionView: View {
         return selectedCategoryID != nil
     }
     
+    private var normalizedAmountText: String {
+        NewTransactionAmountInput.normalizeDecimalSeparators(in: amountText)
+    }
+
     private var parsedAmount: Decimal? {
-        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(amountText))
+        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(normalizedAmountText))
     }
     
     private var parsedTransferAmount: Decimal? {
@@ -3631,8 +3656,8 @@ struct AddTransactionView: View {
     }
 
     private var calculatedAmountResult: Decimal? {
-        guard DecimalFormatter.parse(amountText) == nil else { return nil }
-        guard let value = AmountExpressionEvaluator.evaluate(amountText), value > 0 else { return nil }
+        guard DecimalFormatter.parse(normalizedAmountText) == nil else { return nil }
+        guard let value = AmountExpressionEvaluator.evaluate(normalizedAmountText), value > 0 else { return nil }
         return value
     }
 
@@ -3765,7 +3790,8 @@ struct AddTransactionView: View {
                         text: tracedAmountTextBinding,
                         traceID: "add_transaction.amount",
                         accessibilityIdentifier: "add_transaction.amount",
-                        runtimeMarker: "AT-AMOUNT"
+                        runtimeMarker: "AT-AMOUNT",
+                        sanitizeInput: NewTransactionAmountInput.sanitizeEditingText
                     )
                     MoneyRuntimeDebugPanel(
                         runtimePath: "AddTransactionView/RawAmountTextField",

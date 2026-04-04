@@ -10,6 +10,7 @@ struct RawAmountTextField: UIViewRepresentable {
     var accessibilityIdentifier: String?
     var accessibilityLabel: String?
     var runtimeMarker: String?
+    var sanitizeInput: (String) -> String = SecurityValidation.boundedAmountInput
     var font: UIFont?
     var isFocused: FocusState<Bool>.Binding?
 
@@ -142,7 +143,7 @@ struct RawAmountTextField: UIViewRepresentable {
             }
 
             let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: string)
-            let boundedText = SecurityValidation.boundedAmountInput(proposedRaw)
+            let boundedText = parent.sanitizeInput(proposedRaw)
             let desiredCaretOffset = min(
                 range.location + (string as NSString).length,
                 (boundedText as NSString).length
@@ -303,7 +304,7 @@ struct RawAmountTextField: UIViewRepresentable {
             guard let swiftRange = Range(range, in: currentText) else { return }
 
             let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: insertedText)
-            let boundedText = SecurityValidation.boundedAmountInput(proposedRaw)
+            let boundedText = parent.sanitizeInput(proposedRaw)
             let desiredCaretOffset = min(
                 range.location + (insertedText as NSString).length,
                 (boundedText as NSString).length
@@ -334,6 +335,7 @@ struct RawAmountTextField: View {
     var accessibilityIdentifier: String?
     var accessibilityLabel: String?
     var runtimeMarker: String?
+    var sanitizeInput: (String) -> String = SecurityValidation.boundedAmountInput
     var font: Any?
     var isFocused: FocusState<Bool>.Binding?
 
@@ -362,7 +364,7 @@ struct RawAmountTextField: View {
         .accessibilityIdentifier(accessibilityIdentifier ?? "")
         .accessibilityLabel(accessibilityLabel ?? placeholder)
         .onChange(of: text) {
-            let bounded = SecurityValidation.boundedAmountInput(text)
+            let bounded = sanitizeInput(text)
             MoneyInputTrace.log("field=\(traceID) mac_on_change raw=\(text) bounded=\(bounded)")
             text = bounded
         }

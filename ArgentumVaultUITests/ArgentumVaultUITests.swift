@@ -85,6 +85,44 @@ final class ArgentumVaultUITests: XCTestCase {
     }
 
     @MainActor
+    func testNewTransactionAmountFieldSavesCommaDecimalAsTenPointFiftyFive() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        openAddTransaction(in: app)
+        selectWalletAndCategory(in: app)
+
+        let amountField = amountField(in: app)
+        typeAmountCharacterByCharacter("10,55", into: amountField)
+        XCTAssertEqual(amountField.value as? String, "10,55")
+
+        saveAddTransaction(in: app)
+
+        XCTAssertTrue(app.staticTexts["-10.55 SEK"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["-1,055 SEK"].exists)
+        XCTAssertFalse(app.staticTexts["-1055 SEK"].exists)
+    }
+
+    @MainActor
+    func testNewTransactionAmountFieldSavesDotDecimalAsTenPointFiftyFive() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        openAddTransaction(in: app)
+        selectWalletAndCategory(in: app)
+
+        let amountField = amountField(in: app)
+        typeAmountCharacterByCharacter("10.55", into: amountField)
+        XCTAssertEqual(amountField.value as? String, "10.55")
+
+        saveAddTransaction(in: app)
+
+        XCTAssertTrue(app.staticTexts["-10.55 SEK"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["-1,055 SEK"].exists)
+        XCTAssertFalse(app.staticTexts["-1055 SEK"].exists)
+    }
+
+    @MainActor
     func testAddTransactionAcceptsCommaDecimalSeparator() throws {
         let app = configuredAppForMoneyInputTrace()
         app.launch()
