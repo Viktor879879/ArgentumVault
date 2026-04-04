@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1F2E3D4C5B6A79880796A5B4 /* OpenQuickExpenseIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */; };
 		201D2BC41DB0B137AD35B371 /* OpenQuickExpenseIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */; };
 		27BFF6A52F5A2B9300F3E113 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6A42F5A2B9300F3E113 /* Auth */; };
 		27BFF6A72F5A2B9300F3E113 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = 27BFF6A62F5A2B9300F3E113 /* Functions */; };
@@ -21,7 +22,6 @@
 		54184C12E6DA912A4E8D5CC7 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 06C721BFB7E1DEF6804428C9 /* Foundation.framework */; };
 		6C9A846C44B4154FB8977C18 /* Localizable.strings in Sources */ = {isa = PBXBuildFile; fileRef = 3EF4E334F580173E701B5643 /* Localizable.strings */; };
 		8AF72EA6CC44F615ED5AA985 /* NewExpenseControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EB355D8B54C94E24DB302C /* NewExpenseControl.swift */; };
-		D0B7ED3F7FD4B8CCC7AD037F /* OpenQuickExpenseIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E3E1250D5789BA87DB57B0F /* OpenQuickExpenseIntent.swift */; };
 		D1E338A2477D1CBFCD8C30A0 /* ArgentumVaultControlsExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 321F961FF782A833BE5F1445 /* ArgentumVaultControlsExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		D4B1444387D9C775035A93BE /* GoogleMobileAds in Frameworks */ = {isa = PBXBuildFile; productRef = 40475D7599DCA5CC17EBCC31 /* GoogleMobileAds */; };
 		D84F3603CADF73929E5A0C65 /* NewExpenseControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10EB355D8B54C94E24DB302C /* NewExpenseControl.swift */; };
@@ -81,6 +81,7 @@
 		98680CDCA62B56421A0C1219 /* Localizable.strings */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.strings; name = Localizable.strings; path = sv.lproj/Localizable.strings; sourceTree = "<group>"; };
 		A1C023001122334455667701 /* AppConfig.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/AppConfig.xcconfig; sourceTree = "<group>"; };
 		A1C023001122334455667702 /* Secrets.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Secrets.xcconfig.example; sourceTree = "<group>"; };
+		A1C023001122334455667703 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Release.xcconfig; sourceTree = "<group>"; };
 		B901F021538C5362A6385C4D /* ArgentumVaultControlsBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ArgentumVaultControlsBundle.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -158,12 +159,36 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A1C023001122334455667704 /* Validate Release Secrets */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Validate Release Secrets";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"$CONFIGURATION\" != \"Release\" ]; then\n  exit 0\nfi\n\ncase \"$SUPABASE_URL\" in\n  \"\"|*\"YOUR-PROJECT\"*)\n    echo \"error: SUPABASE_URL must be set to a real value for Release builds. Copy Config/Secrets.xcconfig.example to Config/Secrets.xcconfig.\"\n    exit 1\n    ;;\nesac\n\ncase \"$SUPABASE_ANON_KEY\" in\n  \"\"|sb_publishable_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx)\n    echo \"error: SUPABASE_ANON_KEY must be set to a real value for Release builds. Copy Config/Secrets.xcconfig.example to Config/Secrets.xcconfig.\"\n    exit 1\n    ;;\nesac\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXGroup section */
 		27945F5B2F33C774004B47E2 = {
 			isa = PBXGroup;
 			children = (
 				A1C023001122334455667701 /* AppConfig.xcconfig */,
 				A1C023001122334455667702 /* Secrets.xcconfig.example */,
+				A1C023001122334455667703 /* Release.xcconfig */,
 				27BFF6AE2F5A2BE000F3E113 /* Supabase.swift */,
 				27945F662F33C774004B47E2 /* ArgentumVault */,
 				27945F782F33C775004B47E2 /* ArgentumVaultTests */,
@@ -225,6 +250,7 @@
 			buildPhases = (
 				27945F602F33C774004B47E2 /* Sources */,
 				27945F612F33C774004B47E2 /* Frameworks */,
+				A1C023001122334455667704 /* Validate Release Secrets */,
 				27945F622F33C774004B47E2 /* Resources */,
 				FD3542EF84547C61F89185F3 /* Embed App Extensions */,
 			);
@@ -400,9 +426,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1F2E3D4C5B6A79880796A5B4 /* OpenQuickExpenseIntent.swift in Sources */,
 				27BFF6AF2F5A2BE900F3E113 /* Supabase.swift in Sources */,
-				D0B7ED3F7FD4B8CCC7AD037F /* OpenQuickExpenseIntent.swift in Sources */,
-				8AF72EA6CC44F615ED5AA985 /* NewExpenseControl.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -540,12 +565,12 @@
 		};
 		27945F8A2F33C775004B47E2 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = A1C023001122334455667701 /* AppConfig.xcconfig */;
+			baseConfigurationReference = A1C023001122334455667703 /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = ArgentumVault/MoneyGram.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = X9W248M88B;
@@ -811,6 +836,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = X9W248M88B;

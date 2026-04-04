@@ -10,7 +10,7 @@ enum SecurityValidation {
     static let maxAssetCodeLength = 16
     static let maxSnapshotLabelLength = 80
     static let maxLocalizedNamesJSONLength = 4_096
-    static let maxAmountInputLength = 40
+    nonisolated static let maxAmountInputLength = 40
     static let maxPhotoBytes = 5_000_000
 
     static let minimumSupportedDate = Date(timeIntervalSince1970: 0)
@@ -23,7 +23,7 @@ enum SecurityValidation {
         string: "999999999999.999999",
         locale: posixLocale
     ) ?? 999_999_999_999.999999
-    private static let amountCharacters = CharacterSet(charactersIn: "0123456789.,()+-*/ _'’\u{00A0}\u{202F}")
+    nonisolated private static let amountCharacters = CharacterSet(charactersIn: "0123456789.,()+-*/ _'’\u{00A0}\u{202F}")
     private static let assetCodeCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
     private static let lowercaseHexCharacters = CharacterSet(charactersIn: "0123456789abcdef")
     private static let uppercaseHexCharacters = CharacterSet(charactersIn: "0123456789ABCDEF")
@@ -119,13 +119,13 @@ enum SecurityValidation {
         return String(filtered.prefix(maxLength))
     }
 
-    static func boundedAmountInput(_ raw: String) -> String {
+    nonisolated static func boundedAmountInput(_ raw: String) -> String {
         let trimmedToLength = String(raw.prefix(maxAmountInputLength))
         let filteredScalars = trimmedToLength.unicodeScalars.filter { amountCharacters.contains($0) }
         return String(String.UnicodeScalarView(filteredScalars))
     }
 
-    static func isAllowedAmountInput(_ raw: String) -> Bool {
+    nonisolated static func isAllowedAmountInput(_ raw: String) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= maxAmountInputLength else {
             return false

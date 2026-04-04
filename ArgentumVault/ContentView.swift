@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 import AuthenticationServices
 import Security
 import Auth
+import OSLog
 
 #if canImport(UIKit)
 import UIKit
@@ -101,6 +102,7 @@ struct ContentView: View {
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
     @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
+    @AppStorage("pendingAccountDeletionNotice") private var pendingAccountDeletionNotice = ""
 #if DEBUG
     @AppStorage("debugResetFirstLaunchOnce_v5") private var debugResetFirstLaunchOnce = true
 #endif
@@ -224,13 +226,12 @@ struct ContentView: View {
                 didCompleteInitialSetup = true
             }
             if authMethod.isEmpty {
-                if !appleUserID.isEmpty {
-                    authMethod = "apple"
-                } else if !emailUserEmail.isEmpty {
-                    authMethod = "email"
-                } else if !appleUserID.isEmpty {
-                    authMethod = "apple"
-                }
+                authMethod = AccountScopeSnapshot(
+                    appleUserID: appleUserID,
+                    emailUserEmail: emailUserEmail,
+                    emailUserID: emailUserID,
+                    authMethod: authMethod
+                ).inferredAuthMethodRawValue ?? ""
             }
             activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
                 authMethod: authMethod,
@@ -286,6 +287,16 @@ struct ContentView: View {
         .sheet(isPresented: $isShowingQuickExpense) {
             QuickExpenseView(defaultCurrencyCode: baseCurrencyCode)
         }
+        .alert(
+            L10n.text("settings.account.delete_success_title", lang: uiLanguageCode),
+            isPresented: $showAccountDeletionNotice
+        ) {
+            Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {
+                pendingAccountDeletionNotice = ""
+            }
+        } message: {
+            Text(pendingAccountDeletionNotice)
+        }
         .environment(\.locale, currentLocale)
         .preferredColorScheme(AppTheme.colorScheme(from: appTheme))
         .environmentObject(subscriptionManager)
@@ -317,6 +328,11 @@ struct ContentView: View {
         selectedRootTab = .home
         quickExpenseRouter.consumePendingRequest()
         isShowingQuickExpense = true
+    }
+
+    private func presentPendingAccountDeletionNoticeIfNeeded() {
+        guard !isAccountConnected else { return }
+        showAccountDeletionNotice = !pendingAccountDeletionNotice.trimmed.isEmpty
     }
 }
 
@@ -378,13 +394,13 @@ struct FirstLaunchSetupView: View {
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
 
-    @State private var appleSignInCoordinator = AppleSignInCoordinator()
     @State private var step: FirstSetupStep = .account
     @State private var selectedLanguageCode = FirstLaunchSetupView.defaultLanguageCode()
     @State private var selectedCurrencyCode = CurrencyCatalog.baseCurrencies.first?.code ?? "USD"
     @State private var selectedCountryCode = CountryCatalog.defaultCountryCode()
     @State private var showAppleAuthError = false
     @State private var appleAuthErrorMessage = ""
+    @State private var currentAppleAuthNonce = ""
     @State private var isAppleAuthInProgress = false
     @State private var activeEmailAuthMode: EmailAuthMode?
 
@@ -426,7 +442,10 @@ struct FirstLaunchSetupView: View {
 
                             if !isAccountConnected {
                                 VStack(spacing: 14) {
-                                    AppleSignInActionButton(title: L10n.text("settings.account.sign_in_apple", lang: uiLanguageCode), action: startAppleSignIn)
+                                    AppleSignInActionButton(
+                                        onRequest: configureAppleSignInRequest,
+                                        onCompletion: handleAppleSignInCompletion
+                                    )
                                         .disabled(isAppleAuthInProgress)
 
                                     if isAppleAuthInProgress {
@@ -630,6 +649,37 @@ struct FirstLaunchSetupView: View {
         }
     }
 
+    private func configureAppleSignInRequest(_ request: ASAuthorizationAppleIDRequest) {
+        let rawNonce = AppleSignInCoordinator.randomNonceString()
+        currentAppleAuthNonce = rawNonce
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = AppleSignInCoordinator.sha256(rawNonce)
+    }
+
+    private func handleAppleSignInCompletion(_ result: Result<ASAuthorization, Error>) {
+        let rawNonce = currentAppleAuthNonce.trimmed
+        currentAppleAuthNonce = ""
+
+        switch result {
+        case .success(let authorization):
+            guard !rawNonce.isEmpty else {
+                appleAuthErrorMessage = L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+                showAppleAuthError = true
+                return
+            }
+            handleAppleSignIn(
+                result: .success(
+                    AppleSignInAuthorization(
+                        authorization: authorization,
+                        rawNonce: rawNonce
+                    )
+                )
+            )
+        case .failure(let error):
+            handleAppleSignIn(result: .failure(error))
+        }
+    }
+
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
         AppFlowDiagnostics.launch(
             "FirstLaunchSetupView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
@@ -648,23 +698,20 @@ struct FirstLaunchSetupView: View {
         authMethod = session.authMethod.rawValue
 
         let resolvedAppleEmail = (credential.email ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !resolvedAppleEmail.isEmpty {
-            appleUserEmail = resolvedAppleEmail
-        } else if !session.email.isEmpty {
-            appleUserEmail = session.email
-        }
-
         let given = credential.fullName?.givenName ?? ""
         let family = credential.fullName?.familyName ?? ""
         let fullName = [given, family]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        if !fullName.isEmpty {
-            appleUserName = fullName
-        }
-
-        SessionEvents.postAccountSessionDidChange()
+        let storedAppleEmail = !resolvedAppleEmail.isEmpty ? resolvedAppleEmail : session.email
+        AccountSessionDefaults.persistAppleSession(
+            session,
+            appleUserID: credential.user,
+            appleUserEmail: storedAppleEmail,
+            appleUserName: fullName,
+            postChangeNotification: true
+        )
         triggerProRestoreAfterAuthorization()
         if let accountID = currentSetupAccountID(),
            restoreSetupProfileIfPresent(for: accountID) {
@@ -701,13 +748,6 @@ struct FirstLaunchSetupView: View {
 
     private func openEmailAuth(mode: EmailAuthMode) {
         activeEmailAuthMode = mode
-    }
-
-    private func startAppleSignIn() {
-        guard !isAppleAuthInProgress else { return }
-        appleSignInCoordinator.start { result in
-            handleAppleSignIn(result: result)
-        }
     }
 
     private func triggerProRestoreAfterAuthorization() {
@@ -836,6 +876,7 @@ struct FirstLaunchSetupView: View {
         }
         return error.localizedDescription
     }
+
 }
 
 struct HomeView: View {
@@ -2153,8 +2194,12 @@ struct AnalyticsView: View {
         let diff = NSDecimalNumber(decimal: current - previous)
             .dividing(by: NSDecimalNumber(decimal: previous))
             .multiplying(by: NSDecimalNumber(value: 100))
-            .doubleValue
-        let rounded = DecimalFormatter.doubleString(from: abs(diff), minimumFractionDigits: 0, maximumFractionDigits: 1)
+            .decimalValue
+        let rounded = DecimalFormatter.string(
+            from: absDecimal(diff),
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 1
+        )
         let sign = diff >= 0 ? "+" : "-"
         return "\(sign)\(rounded)%"
     }
@@ -2228,8 +2273,8 @@ struct AnalyticsView: View {
         let percent = NSDecimalNumber(decimal: net)
             .dividing(by: NSDecimalNumber(decimal: rangeIncome))
             .multiplying(by: NSDecimalNumber(value: 100))
-            .doubleValue
-        let rounded = DecimalFormatter.doubleString(from: percent, minimumFractionDigits: 0, maximumFractionDigits: 0)
+            .decimalValue
+        let rounded = DecimalFormatter.string(from: percent, minimumFractionDigits: 0, maximumFractionDigits: 0)
         return "\(rounded)%"
     }
 
@@ -2263,10 +2308,10 @@ struct AnalyticsView: View {
         if rangeIncome > 0 {
             let ratio = NSDecimalNumber(decimal: rangeExpenseAbs)
                 .dividing(by: NSDecimalNumber(decimal: rangeIncome))
-                .doubleValue
-            if ratio > 0.9 {
+                .decimalValue
+            if ratio > Decimal(string: "0.9") ?? 0.9 {
                 insights.append(L10n.text("pro.ai.high_burn", lang: uiLanguageCode))
-            } else if ratio < 0.7 {
+            } else if ratio < Decimal(string: "0.7") ?? 0.7 {
                 insights.append(L10n.text("pro.ai.healthy_burn", lang: uiLanguageCode))
             }
         }
@@ -2622,8 +2667,11 @@ struct CategoryTotal: Identifiable {
     
     var formattedPercent: String {
         guard total > 0 else { return "0%" }
-        let percent = (absDecimal(amount) as NSDecimalNumber).doubleValue / (total as NSDecimalNumber).doubleValue * 100
-        let percentText = DecimalFormatter.doubleString(
+        let percent = NSDecimalNumber(decimal: absDecimal(amount))
+            .dividing(by: NSDecimalNumber(decimal: total))
+            .multiplying(by: NSDecimalNumber(value: 100))
+            .decimalValue
+        let percentText = DecimalFormatter.string(
             from: percent,
             minimumFractionDigits: 0,
             maximumFractionDigits: 0
@@ -2646,6 +2694,7 @@ enum CategoryColorPalette {
 enum DecimalFormatter {
     private static let posixLocale = Locale(identifier: "en_US_POSIX")
     private static let supportedLanguageCodes: Set<String> = ["en", "ru", "uk", "sv"]
+    private static let ignoredGroupingScalars: Set<Character> = [" ", "\u{00A0}", "\u{202F}", "_", "'", "’"]
 
     private static func appNumberLocale() -> Locale {
         let languageCode = UserDefaults.standard.string(forKey: "appLanguageCode") ?? "system"
@@ -2656,6 +2705,10 @@ enum DecimalFormatter {
             return Locale(identifier: languageCode)
         }
         return .autoupdatingCurrent
+    }
+
+    private static func inputNumberLocale() -> Locale {
+        .autoupdatingCurrent
     }
 
     private static func formatter(
@@ -2673,11 +2726,15 @@ enum DecimalFormatter {
         return formatter
     }
 
-    static func string(from value: Decimal, maximumFractionDigits: Int = 2) -> String {
+    static func string(
+        from value: Decimal,
+        minimumFractionDigits: Int = 0,
+        maximumFractionDigits: Int = 2
+    ) -> String {
         let formatter = formatter(
             locale: appNumberLocale(),
             usesGroupingSeparator: true,
-            minimumFractionDigits: 0,
+            minimumFractionDigits: minimumFractionDigits,
             maximumFractionDigits: maximumFractionDigits
         )
         let number = NSDecimalNumber(decimal: value)
@@ -2707,74 +2764,130 @@ enum DecimalFormatter {
         return formatter.string(from: number) ?? "\(value)"
     }
 
-    static func doubleString(
-        from value: Double,
-        minimumFractionDigits: Int = 0,
-        maximumFractionDigits: Int = 2
-    ) -> String {
-        let formatter = formatter(
-            locale: appNumberLocale(),
-            usesGroupingSeparator: true,
-            minimumFractionDigits: minimumFractionDigits,
-            maximumFractionDigits: maximumFractionDigits
-        )
-        let number = NSNumber(value: value)
-        return formatter.string(from: number) ?? "\(value)"
-    }
-    
     static func parse(_ text: String) -> Decimal? {
+        parse(text, locale: inputNumberLocale())
+    }
+
+    static func parse(_ text: String, locale: Locale) -> Decimal? {
         guard SecurityValidation.isAllowedAmountInput(text) else {
+            MoneyInputTrace.log("parse rejected raw=\(text) locale=\(locale.identifier) reason=disallowed_input")
             return nil
         }
+        guard let normalized = normalizedDecimalString(from: text, locale: locale) else {
+            MoneyInputTrace.log("parse failed raw=\(text) locale=\(locale.identifier) reason=normalization_failed")
+            return nil
+        }
+        let parsed = Decimal(string: normalized, locale: posixLocale)
+        MoneyInputTrace.log(
+            "parse raw=\(text) locale=\(locale.identifier) normalized=\(normalized) parsed=\(String(describing: parsed))"
+        )
+        return parsed
+    }
+
+    static func normalizedDecimalString(from text: String, locale: Locale) -> String? {
         var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleaned.isEmpty { return nil }
 
-        cleaned = cleaned
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "\u{00A0}", with: "")
-            .replacingOccurrences(of: "\u{202F}", with: "")
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "'", with: "")
-            .replacingOccurrences(of: "’", with: "")
+        cleaned.removeAll(where: { ignoredGroupingScalars.contains($0) })
+        if cleaned.isEmpty { return nil }
 
-        let locale = appNumberLocale()
-        if let groupingSeparator = locale.groupingSeparator, !groupingSeparator.isEmpty {
-            cleaned = cleaned.replacingOccurrences(of: groupingSeparator, with: "")
-        }
-        if let decimalSeparator = locale.decimalSeparator,
-           !decimalSeparator.isEmpty,
-           decimalSeparator != "." {
-            cleaned = cleaned.replacingOccurrences(of: decimalSeparator, with: ".")
-        }
-        
-        let lastComma = cleaned.lastIndex(of: ",")
-        let lastDot = cleaned.lastIndex(of: ".")
-        
-        if let comma = lastComma, let dot = lastDot {
-            if comma > dot {
-                cleaned = cleaned.replacingOccurrences(of: ".", with: "")
-                cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
-            } else {
-                cleaned = cleaned.replacingOccurrences(of: ",", with: "")
-            }
-        } else if lastComma != nil {
-            cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
-        }
-        
-        let allowed = CharacterSet(charactersIn: "0123456789.-")
-        if cleaned.rangeOfCharacter(from: allowed.inverted) != nil {
-            return nil
-        }
-        if cleaned.filter({ $0 == "." }).count > 1 {
-            return nil
-        }
         if cleaned.filter({ $0 == "-" }).count > 1 {
             return nil
         }
         if let minusIndex = cleaned.firstIndex(of: "-"), minusIndex != cleaned.startIndex {
             return nil
         }
-        return Decimal(string: cleaned, locale: posixLocale)
+
+        let isNegative = cleaned.first == "-"
+        let unsigned = isNegative ? String(cleaned.dropFirst()) : cleaned
+        guard !unsigned.isEmpty else { return nil }
+        guard unsigned.allSatisfy({ $0.isNumber || $0 == "," || $0 == "." }) else {
+            return nil
+        }
+
+        let normalizedUnsigned = normalizeUnsignedDecimal(unsigned, locale: locale)
+        guard let normalizedUnsigned, !normalizedUnsigned.isEmpty else {
+            return nil
+        }
+
+        return isNegative ? "-\(normalizedUnsigned)" : normalizedUnsigned
+    }
+
+    private static func normalizeUnsignedDecimal(_ text: String, locale: Locale) -> String? {
+        guard text.contains(where: \.isNumber) else { return nil }
+
+        let commaCount = text.filter({ $0 == "," }).count
+        let dotCount = text.filter({ $0 == "." }).count
+
+        if commaCount == 0 && dotCount == 0 {
+            return text
+        }
+
+        if commaCount > 0 && dotCount > 0 {
+            return normalizeMixedSeparatorDecimal(text)
+        }
+
+        let separator: Character = commaCount > 0 ? "," : "."
+        let count = commaCount > 0 ? commaCount : dotCount
+        let parts = text.split(separator: separator, omittingEmptySubsequences: false)
+
+        guard parts.count >= 2, parts.allSatisfy({ !$0.isEmpty }) else {
+            return nil
+        }
+
+        if count > 1 {
+            guard parts.dropFirst().allSatisfy({ $0.count == 3 }) else {
+                return nil
+            }
+            return parts.joined()
+        }
+
+        let integerPart = String(parts[0])
+        let fractionalPart = String(parts[1])
+        let groupingSeparator = locale.groupingSeparator?.first
+        let decimalSeparator = locale.decimalSeparator?.first
+
+        if separator == groupingSeparator,
+           separator != decimalSeparator,
+           fractionalPart.count == 3,
+           !integerPart.isEmpty {
+            MoneyInputTrace.log(
+                "parse rejected raw=\(text) locale=\(locale.identifier) reason=ambiguous_single_separator"
+            )
+            return nil
+        }
+
+        let normalizedIntegerPart = integerPart.isEmpty ? "0" : integerPart
+        return "\(normalizedIntegerPart).\(fractionalPart)"
+    }
+
+    private static func normalizeMixedSeparatorDecimal(_ text: String) -> String? {
+        guard let lastComma = text.lastIndex(of: ","),
+              let lastDot = text.lastIndex(of: ".") else {
+            return nil
+        }
+
+        let decimalSeparator: Character = lastComma > lastDot ? "," : "."
+        let groupingSeparator: Character = decimalSeparator == "," ? "." : ","
+
+        let pieces = text.split(separator: decimalSeparator, omittingEmptySubsequences: false)
+        guard pieces.count == 2 else { return nil }
+
+        let integerPart = String(pieces[0])
+        let fractionalPart = String(pieces[1])
+
+        guard !fractionalPart.isEmpty, !fractionalPart.contains(groupingSeparator) else {
+            return nil
+        }
+
+        let normalizedIntegerPart = integerPart.replacingOccurrences(of: String(groupingSeparator), with: "")
+        let safeIntegerPart = normalizedIntegerPart.isEmpty ? "0" : normalizedIntegerPart
+
+        guard safeIntegerPart.allSatisfy(\.isNumber), fractionalPart.allSatisfy(\.isNumber) else {
+            return nil
+        }
+
+        return "\(safeIntegerPart).\(fractionalPart)"
     }
 
     static func parseOrEvaluate(_ text: String) -> Decimal? {
@@ -2782,6 +2895,27 @@ enum DecimalFormatter {
             return parsed
         }
         return AmountExpressionEvaluator.evaluate(text)
+    }
+}
+
+enum NewTransactionAmountInput {
+    nonisolated private static let commaVariants: Set<Character> = [",", "，", "、", "﹐", "､", "،"]
+    nonisolated private static let dotVariants: Set<Character> = [".", "．", "。", "｡", "﹒", "٫"]
+
+    nonisolated static func normalizeDecimalSeparators(in text: String) -> String {
+        String(text.map { character in
+            if commaVariants.contains(character) {
+                return ","
+            }
+            if dotVariants.contains(character) {
+                return "."
+            }
+            return character
+        })
+    }
+
+    nonisolated static func sanitizeEditingText(_ text: String) -> String {
+        SecurityValidation.boundedAmountInput(normalizeDecimalSeparators(in: text))
     }
 }
 
@@ -3043,11 +3177,14 @@ struct SummaryComparisonView: View {
     
     var body: some View {
         let delta = currentTotal - previousTotal
-        let percent: Double = {
+        let percent: Decimal = {
             if previousTotal == 0 {
                 return 0
             }
-            return NSDecimalNumber(decimal: delta).doubleValue / NSDecimalNumber(decimal: previousTotal).doubleValue * 100
+            return NSDecimalNumber(decimal: delta)
+                .dividing(by: NSDecimalNumber(decimal: previousTotal))
+                .multiplying(by: NSDecimalNumber(value: 100))
+                .decimalValue
         }()
         
         return VStack(alignment: .leading, spacing: 6) {
@@ -3089,12 +3226,12 @@ struct SummaryComparisonView: View {
         return "\(sign)\(DecimalFormatter.string(from: absDecimal(amount))) \(currency)"
     }
     
-    private func changeLabel(delta: Decimal, percent: Double) -> String {
+    private func changeLabel(delta: Decimal, percent: Decimal) -> String {
         let sign = delta >= 0 ? "+" : "-"
         let absDelta = delta >= 0 ? delta : -delta
         let deltaText = DecimalFormatter.string(from: absDelta)
-        let percentText = DecimalFormatter.doubleString(
-            from: abs(percent),
+        let percentText = DecimalFormatter.string(
+            from: absDecimal(percent),
             minimumFractionDigits: 1,
             maximumFractionDigits: 1
         )
@@ -3227,6 +3364,7 @@ struct TransactionRow: View {
     @AppStorage("isNumbersHidden") private var isNumbersHidden = false
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
+    @ObservedObject private var moneyRuntimeDebug = MoneyRuntimeDebugStore.shared
     
     private var signedAmount: Decimal {
         let inferredType: TransactionType = {
@@ -3249,6 +3387,39 @@ struct TransactionRow: View {
         if transaction.category?.type == .income { return .income }
         return .expense
     }
+
+    private var displayedAmountText: String {
+        let rendered: String
+        if isNumbersHidden {
+            rendered = "*** \(transaction.currencyCode)"
+        } else if transactionTypeResolved == .transfer {
+            rendered = "\(DecimalFormatter.string(from: transaction.amount, maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)"
+        } else {
+            let sign = signedAmount >= 0 ? "+" : "-"
+            rendered = "\(sign)\(DecimalFormatter.string(from: absDecimal(signedAmount), maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)"
+        }
+
+        MoneyInputTrace.log(
+            """
+            transaction_row_display syncID=\(transaction.syncID) \
+            amount=\(transaction.amount) \
+            type=\(transactionTypeResolved.rawValue) \
+            rendered=\(rendered)
+            """
+        )
+        MoneyRuntimeDebug.recordRendered(syncID: transaction.syncID, rendered: rendered)
+        return rendered
+    }
+
+    private var amountForegroundStyle: Color {
+        if isNumbersHidden {
+            return .primary
+        }
+        if transactionTypeResolved == .transfer {
+            return .secondary
+        }
+        return signedAmount >= 0 ? .green : .red
+    }
     
     var body: some View {
         HStack {
@@ -3268,24 +3439,27 @@ struct TransactionRow: View {
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 4) {
-                if isNumbersHidden {
-                    Text("*** \(transaction.currencyCode)")
-                        .font(.headline)
-                } else {
-                    if transactionTypeResolved == .transfer {
-                        Text("\(DecimalFormatter.string(from: transaction.amount, maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)")
-                            .font(.headline)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        let sign = signedAmount >= 0 ? "+" : "-"
-                        Text("\(sign)\(DecimalFormatter.string(from: absDecimal(signedAmount), maximumFractionDigits: isRoundedAmounts ? 0 : 2)) \(transaction.currencyCode)")
-                            .font(.headline)
-                            .foregroundStyle(signedAmount >= 0 ? .green : .red)
-                    }
-                }
+                Text(displayedAmountText)
+                    .font(.headline)
+                    .foregroundStyle(amountForegroundStyle)
                 Text(formattedDate(transaction.date))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if moneyRuntimeDebug.lastSavedSyncID == transaction.syncID {
+                    Text(
+                        """
+                        \(MoneyRuntimeDebug.marker) \
+                        save=\(moneyRuntimeDebug.lastSaveRawText) \
+                        parsed=\(moneyRuntimeDebug.lastSaveParsedText) \
+                        stored=\(moneyRuntimeDebug.lastPersistedText) \
+                        row=\(moneyRuntimeDebug.lastRenderedText)
+                        """
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.trailing)
+                    .accessibilityIdentifier("money_runtime_debug.history")
+                }
             }
         }
     }
@@ -3587,6 +3761,7 @@ struct AddTransactionView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @ObservedObject private var moneyRuntimeDebug = MoneyRuntimeDebugStore.shared
     
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Wallet.name) private var wallets: [Wallet]
@@ -3607,6 +3782,7 @@ struct AddTransactionView: View {
     @State private var isTransferAmountManuallyEdited: Bool
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var photoData: Data?
+    @State private var amountInputSetCounter: Int = 0
     
     private let originalWalletID: PersistentIdentifier?
     private let originalTransferWalletID: PersistentIdentifier?
@@ -3652,8 +3828,12 @@ struct AddTransactionView: View {
         return selectedCategoryID != nil
     }
     
+    private var normalizedAmountText: String {
+        NewTransactionAmountInput.normalizeDecimalSeparators(in: amountText)
+    }
+
     private var parsedAmount: Decimal? {
-        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(amountText))
+        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(normalizedAmountText))
     }
     
     private var parsedTransferAmount: Decimal? {
@@ -3661,8 +3841,8 @@ struct AddTransactionView: View {
     }
 
     private var calculatedAmountResult: Decimal? {
-        guard DecimalFormatter.parse(amountText) == nil else { return nil }
-        guard let value = AmountExpressionEvaluator.evaluate(amountText), value > 0 else { return nil }
+        guard DecimalFormatter.parse(normalizedAmountText) == nil else { return nil }
+        guard let value = AmountExpressionEvaluator.evaluate(normalizedAmountText), value > 0 else { return nil }
         return value
     }
 
@@ -3670,6 +3850,41 @@ struct AddTransactionView: View {
         guard DecimalFormatter.parse(transferAmountText) == nil else { return nil }
         guard let value = AmountExpressionEvaluator.evaluate(transferAmountText), value > 0 else { return nil }
         return value
+    }
+
+    private var tracedAmountTextBinding: Binding<String> {
+        Binding(
+            get: { amountText },
+            set: { newValue in
+                amountInputSetCounter += 1
+                MoneyInputTrace.log(
+                    """
+                    field=add_transaction.amount binding_setter \
+                    step=\(amountInputSetCounter) \
+                    old=\(amountText) \
+                    new=\(newValue)
+                    """
+                )
+                amountText = newValue
+            }
+        )
+    }
+
+    private var tracedTransferAmountTextBinding: Binding<String> {
+        Binding(
+            get: { transferAmountText },
+            set: { newValue in
+                MoneyInputTrace.log(
+                    """
+                    field=add_transaction.transfer_amount binding_setter \
+                    old=\(transferAmountText) \
+                    new=\(newValue)
+                    """
+                )
+                transferAmountText = newValue
+                isTransferAmountManuallyEdited = true
+            }
+        )
     }
     
     var body: some View {
@@ -3707,13 +3922,14 @@ struct AddTransactionView: View {
                         .pickerStyle(.menu)
                     }
                     
-                    Section(L10n.text("transaction.conversion", lang: uiLanguageCode)) {
-                        TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $transferAmountText)
-                            .keyboardType(.decimalPad)
-                            .onChange(of: transferAmountText) {
-                                transferAmountText = SecurityValidation.boundedAmountInput(transferAmountText)
-                                isTransferAmountManuallyEdited = true
-                            }
+                Section(L10n.text("transaction.conversion", lang: uiLanguageCode)) {
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: tracedTransferAmountTextBinding,
+                        traceID: "add_transaction.transfer_amount",
+                        accessibilityIdentifier: "add_transaction.transfer_amount",
+                        runtimeMarker: "AT-XFER"
+                    )
 
                         if let calculatedTransferAmountResult {
                             Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedTransferAmountResult, maximumFractionDigits: 6))")
@@ -3754,11 +3970,19 @@ struct AddTransactionView: View {
                 }
                 
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
-                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                        .keyboardType(.decimalPad)
-                        .onChange(of: amountText) {
-                            amountText = SecurityValidation.boundedAmountInput(amountText)
-                        }
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: tracedAmountTextBinding,
+                        traceID: "add_transaction.amount",
+                        accessibilityIdentifier: "add_transaction.amount",
+                        runtimeMarker: "AT-AMOUNT",
+                        sanitizeInput: NewTransactionAmountInput.sanitizeEditingText
+                    )
+                    MoneyRuntimeDebugPanel(
+                        runtimePath: "AddTransactionView/RawAmountTextField",
+                        fieldText: moneyRuntimeDebug.liveFieldText,
+                        parsedText: moneyRuntimeDebug.liveParsedText
+                    )
 
                     if let calculatedAmountResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
@@ -3829,6 +4053,7 @@ struct AddTransactionView: View {
                             dismiss()
                         }
                     }
+                    .accessibilityIdentifier("add_transaction.save")
                     .disabled(!canSave)
                 }
             }
@@ -3842,6 +4067,11 @@ struct AddTransactionView: View {
             }
             .onAppear {
                 normalizeSelections()
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "AddTransactionView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
             }
             .onChange(of: transactionType) {
                 if transactionType == .transfer {
@@ -3858,6 +4088,12 @@ struct AddTransactionView: View {
                 applyAutoTransferAmount(force: !isTransferAmountManuallyEdited)
             }
             .onChange(of: amountText) {
+                MoneyInputTrace.log("field=add_transaction.amount after_on_change text=\(amountText)")
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "AddTransactionView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
                 applyAutoTransferAmount(force: !isTransferAmountManuallyEdited)
             }
         }
@@ -3874,6 +4110,14 @@ struct AddTransactionView: View {
     private func saveTransaction() -> Bool {
         guard let amount = parsedAmount else { return false }
         guard selectedWalletID != nil else { return false }
+        MoneyRuntimeDebug.recordSaveAttempt(
+            path: "AddTransactionView/RawAmountTextField",
+            rawText: amountText,
+            parsed: amount
+        )
+        MoneyInputTrace.log(
+            "save_transaction rawAmountText=\(amountText) parsedAmount=\(amount) transactionType=\(transactionType.rawValue)"
+        )
         
         let selectedCategory = categories.first { $0.persistentModelID == selectedCategoryID }
         let selectedWallet = self.selectedWallet
@@ -3916,6 +4160,7 @@ struct AddTransactionView: View {
 
             return true
         } catch {
+            MoneyInputTrace.log("save_transaction failed rawAmountText=\(amountText) error=\(error)")
             return false
         }
     }
@@ -4158,11 +4403,12 @@ struct AddWalletView: View {
                 }
                 
                 Section(L10n.text("wallet.balance", lang: uiLanguageCode)) {
-                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $balanceText)
-                        .keyboardType(.decimalPad)
-                        .onChange(of: balanceText) {
-                            balanceText = SecurityValidation.boundedAmountInput(balanceText)
-                        }
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: $balanceText,
+                        traceID: "wallet.balance",
+                        runtimeMarker: "WALLET-BAL"
+                    )
 
                     if let calculatedBalanceResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedBalanceResult, maximumFractionDigits: 6))")
@@ -4521,6 +4767,7 @@ struct SettingsView: View {
     @AppStorage("emailUserEmail") private var emailUserEmail = ""
     @AppStorage("emailUserID") private var emailUserID = ""
     @AppStorage("authMethod") private var authMethod = ""
+    @AppStorage("pendingAccountDeletionNotice") private var pendingAccountDeletionNotice = ""
     @AppStorage("didCompleteInitialSetup_v1") private var didCompleteInitialSetup = false
 
     @ObservedObject var rateService: RateService
@@ -4536,9 +4783,13 @@ struct SettingsView: View {
     @State private var showAppleAuthError = false
     @State private var appleAuthErrorMessage = ""
     @State private var isAppleAuthInProgress = false
+    @State private var currentAppleAuthNonce = ""
+    @State private var showDeleteAccountConfirmation = false
+    @State private var showDeleteAccountError = false
+    @State private var deleteAccountErrorMessage = ""
+    @State private var isDeletingAccount = false
     @State private var showPaywall = false
     @State private var showEmailAuthSheet = false
-    @State private var appleSignInCoordinator = AppleSignInCoordinator()
 #if DEBUG
     @State private var cloudDebugStatus: ICloudBackupManager.SnapshotDebugStatus?
     @State private var cloudDebugMessage = ""
@@ -4590,11 +4841,10 @@ struct SettingsView: View {
             List {
                 Section(L10n.text("settings.account", lang: uiLanguageCode)) {
                     if !isAccountConnected {
-                        AppleSignInActionButton(title: L10n.text("settings.account.sign_in_apple", lang: uiLanguageCode)) {
-                            appleSignInCoordinator.start { result in
-                                handleAppleSignIn(result: result)
-                            }
-                        }
+                        AppleSignInActionButton(
+                            onRequest: configureAppleSignInRequest,
+                            onCompletion: handleAppleSignInCompletion
+                        )
                         .disabled(isAppleAuthInProgress)
 
                         if isAppleAuthInProgress {
@@ -4645,6 +4895,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.red)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
+                        .disabled(isDeletingAccount)
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
                     }
@@ -4941,6 +5192,44 @@ struct SettingsView: View {
                         .accessibilityLabel(L10n.text("settings.new_tags", lang: uiLanguageCode))
                     }
                 }
+
+                if isAccountConnected {
+                    Section {
+                        Button(role: .destructive) {
+                            showDeleteAccountConfirmation = true
+                        } label: {
+                            HStack(spacing: 10) {
+                                Label {
+                                    Text(L10n.text("settings.account.delete_account", lang: uiLanguageCode))
+                                        .font(.body.weight(.semibold))
+                                } icon: {
+                                    Image(systemName: "trash")
+                                }
+                                Spacer()
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .disabled(isDeletingAccount)
+
+                        Text(L10n.text("settings.account.delete_body", lang: uiLanguageCode))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if isDeletingAccount {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text(L10n.text("settings.account.deleting", lang: uiLanguageCode))
+                            }
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text(L10n.text("settings.account.danger_zone", lang: uiLanguageCode))
+                            .textCase(nil)
+                    }
+                }
             }
             .navigationTitle(L10n.text("tab.settings", lang: uiLanguageCode))
             .sheet(isPresented: $isAddingCategory) {
@@ -4987,6 +5276,26 @@ struct SettingsView: View {
                 Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
             } message: {
                 Text(appleAuthErrorMessage)
+            }
+            .confirmationDialog(
+                L10n.text("settings.account.delete_title", lang: uiLanguageCode),
+                isPresented: $showDeleteAccountConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button(L10n.text("settings.account.delete_account", lang: uiLanguageCode), role: .destructive) {
+                    deleteCurrentAccount()
+                }
+                Button(L10n.text("common.cancel", lang: uiLanguageCode), role: .cancel) {}
+            } message: {
+                Text(L10n.text("settings.account.delete_message", lang: uiLanguageCode))
+            }
+            .alert(
+                deleteAccountAlertTitle,
+                isPresented: $showDeleteAccountError
+            ) {
+                Button(L10n.text("common.ok", lang: uiLanguageCode), role: .cancel) {}
+            } message: {
+                Text(deleteAccountErrorMessage)
             }
             .onAppear {
                 if appCountryCode.isEmpty {
@@ -5145,6 +5454,37 @@ struct SettingsView: View {
         }
     }
 
+    private func configureAppleSignInRequest(_ request: ASAuthorizationAppleIDRequest) {
+        let rawNonce = AppleSignInCoordinator.randomNonceString()
+        currentAppleAuthNonce = rawNonce
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = AppleSignInCoordinator.sha256(rawNonce)
+    }
+
+    private func handleAppleSignInCompletion(_ result: Result<ASAuthorization, Error>) {
+        let rawNonce = currentAppleAuthNonce.trimmed
+        currentAppleAuthNonce = ""
+
+        switch result {
+        case .success(let authorization):
+            guard !rawNonce.isEmpty else {
+                appleAuthErrorMessage = L10n.text("settings.account.error_unknown", lang: uiLanguageCode)
+                showAppleAuthError = true
+                return
+            }
+            handleAppleSignIn(
+                result: .success(
+                    AppleSignInAuthorization(
+                        authorization: authorization,
+                        rawNonce: rawNonce
+                    )
+                )
+            )
+        case .failure(let error):
+            handleAppleSignIn(result: .failure(error))
+        }
+    }
+
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
         AppFlowDiagnostics.launch(
             "SettingsView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
@@ -5163,23 +5503,20 @@ struct SettingsView: View {
         authMethod = session.authMethod.rawValue
 
         let resolvedAppleEmail = (credential.email ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !resolvedAppleEmail.isEmpty {
-            appleUserEmail = resolvedAppleEmail
-        } else if !session.email.isEmpty {
-            appleUserEmail = session.email
-        }
-
         let given = credential.fullName?.givenName ?? ""
         let family = credential.fullName?.familyName ?? ""
         let fullName = [given, family]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-        if !fullName.isEmpty {
-            appleUserName = fullName
-        }
-
-        SessionEvents.postAccountSessionDidChange()
+        let storedAppleEmail = !resolvedAppleEmail.isEmpty ? resolvedAppleEmail : session.email
+        AccountSessionDefaults.persistAppleSession(
+            session,
+            appleUserID: credential.user,
+            appleUserEmail: storedAppleEmail,
+            appleUserName: fullName,
+            postChangeNotification: true
+        )
         triggerProRestoreAfterAuthorization()
         persistSetupProfileIfPossible()
 #if DEBUG
@@ -5227,6 +5564,97 @@ struct SettingsView: View {
             await MainActor.run {
                 clearAccountSession()
             }
+        }
+    }
+
+    private func deleteCurrentAccount() {
+        guard !isDeletingAccount else { return }
+        guard let accountID = currentSetupAccountID() else {
+            deleteAccountErrorMessage = buildDeleteAccountFailureAlertMessage(
+                baseMessage: L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode),
+                diagnostics: """
+                hasCachedSession=false
+                hasCachedToken=false
+                tokenLooksLikeJWT=false
+                tokenMatchesPublishableKey=false
+                cachedIssuer=none
+                cachedAudience=none
+                cachedExp=none
+                cachedProjectRefMatches=false
+                tokenSource=none
+                hasAuthorizationHeader=false
+                requestURL=none
+                statusCode=none
+                responseBodySnippet=none
+                """
+            )
+            showDeleteAccountError = true
+            return
+        }
+
+        let resolvedAuthMethod = AccountScopeSnapshot(
+            appleUserID: appleUserID,
+            emailUserEmail: emailUserEmail,
+            emailUserID: emailUserID,
+            authMethod: authMethod
+        ).effectiveAuthMethod?.rawValue ?? authMethod.trimmed.lowercased()
+        let accountBucket = AccountBucketHasher.bucket(for: accountID)
+        AppDiagnostics.accountDeletion.debug(
+            "deleteCurrentAccount flow start authMethod=\(resolvedAuthMethod, privacy: .public) bucket=\(accountBucket, privacy: .public)"
+        )
+
+        isDeletingAccount = true
+
+        Task {
+            do {
+                try await EmailAuthManager.deleteCurrentAccount()
+                await MainActor.run {
+                    AppDiagnostics.accountDeletion.debug(
+                        "deleteCurrentAccount flow backend success bucket=\(accountBucket, privacy: .public)"
+                    )
+                    isDeletingAccount = false
+                    deleteAccountErrorMessage = ""
+                    completeDeletedAccountCleanup(accountID: accountID)
+                }
+            } catch {
+                let diagnostics = await EmailAuthManager.latestDeleteAccountDiagnosticsText()
+                await MainActor.run {
+                    AppDiagnostics.accountDeletion.error(
+                        "deleteCurrentAccount flow failure bucket=\(accountBucket, privacy: .public) error=\(String(describing: error), privacy: .public)"
+                    )
+                    isDeletingAccount = false
+                    deleteAccountErrorMessage = buildDeleteAccountFailureAlertMessage(
+                        baseMessage: localizedAccountDeletionError(error),
+                        diagnostics: diagnostics
+                    )
+                    showDeleteAccountError = true
+                }
+            }
+        }
+    }
+
+    private func completeDeletedAccountCleanup(accountID: String) {
+        let accountBucket = AccountBucketHasher.bucket(for: accountID)
+        AppDiagnostics.accountDeletion.debug(
+            "deleteCurrentAccount cleanup start bucket=\(accountBucket, privacy: .public)"
+        )
+
+        try? SetupProfileStore.delete(for: accountID)
+        pendingAccountDeletionNotice = L10n.text("settings.account.delete_success_message", lang: uiLanguageCode)
+        baseCurrencyCode = ""
+        appCountryCode = ""
+        didCompleteInitialSetup = false
+        clearAccountSession()
+        AppDiagnostics.accountDeletion.debug(
+            "deleteCurrentAccount cleanup reset complete bucket=\(accountBucket, privacy: .public)"
+        )
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            AccountScopedDataPurger.purgeArtifacts(for: accountID)
+            AppDiagnostics.accountDeletion.debug(
+                "deleteCurrentAccount cleanup purge complete bucket=\(accountBucket, privacy: .public)"
+            )
         }
     }
 
@@ -5460,6 +5888,53 @@ struct SettingsView: View {
         }
         return error.localizedDescription
     }
+
+    private func localizedAccountDeletionError(_ error: Error) -> String {
+        switch error {
+        case let AccountDeletionError.sessionRequired(message):
+            return sanitizedDeleteAccountServerMessage(message)
+                ?? L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+        case AccountDeletionError.networkFailure:
+            return L10n.text("settings.account.delete_error_network", lang: uiLanguageCode)
+        case let AccountDeletionError.requestFailed(_, message):
+            return sanitizedDeleteAccountServerMessage(message)
+                ?? L10n.text("settings.account.delete_error_failed", lang: uiLanguageCode)
+        default:
+            return error.localizedDescription
+        }
+    }
+
+    private var deleteAccountAlertTitle: String {
+        "DELETE DEBUG v2 • " + L10n.text("settings.account.delete_error_title", lang: uiLanguageCode)
+    }
+
+    private func buildDeleteAccountFailureAlertMessage(baseMessage: String, diagnostics: String) -> String {
+        """
+        DELETE DEBUG v2
+
+        \(baseMessage)
+
+        \(diagnostics)
+        """
+    }
+
+    private func sanitizedDeleteAccountServerMessage(_ message: String?) -> String? {
+        guard let message else { return nil }
+        let normalized = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+
+        let lowered = normalized.lowercased()
+        if lowered.contains("authorization")
+            || lowered.contains("authenticated user session")
+            || lowered.contains("session is required")
+            || lowered.contains("jwt")
+            || lowered.contains("token")
+        {
+            return L10n.text("settings.account.delete_error_unavailable", lang: uiLanguageCode)
+        }
+
+        return normalized
+    }
 }
 
 struct AddRecurringRuleView: View {
@@ -5612,11 +6087,12 @@ struct AddRecurringRuleView: View {
                 }
 
                 Section(L10n.text("common.amount", lang: uiLanguageCode)) {
-                    TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                        .keyboardType(.decimalPad)
-                        .onChange(of: amountText) {
-                            amountText = SecurityValidation.boundedAmountInput(amountText)
-                        }
+                    RawAmountTextField(
+                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                        text: $amountText,
+                        traceID: "recurring.amount",
+                        runtimeMarker: "RECUR-AMT"
+                    )
 
                     if let calculatedAmountResult {
                         Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
@@ -6204,6 +6680,19 @@ private enum SetupProfileStore {
 
         throw EmailAuthError.storageFailure
     }
+
+    static func delete(for accountID: String) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: accountID
+        ]
+
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw EmailAuthError.storageFailure
+        }
+    }
 }
 
 
@@ -6214,22 +6703,13 @@ private extension String {
 }
 
 private struct AppleSignInActionButton: View {
-    let title: String
-    let action: () -> Void
+    let onRequest: (ASAuthorizationAppleIDRequest) -> Void
+    let onCompletion: (Result<ASAuthorization, Error>) -> Void
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "applelogo")
-                    .font(.headline)
-                Text(title)
-                    .font(.headline)
-            }
+        SignInWithAppleButton(.continue, onRequest: onRequest, onCompletion: onCompletion)
+            .signInWithAppleButtonStyle(.black)
             .frame(maxWidth: .infinity, minHeight: 44)
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(.black)
-        .foregroundStyle(.white)
     }
 }
 

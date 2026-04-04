@@ -1,5 +1,8 @@
 import SwiftData
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct QuickExpenseView: View {
     @Environment(\.dismiss) private var dismiss
@@ -7,6 +10,7 @@ struct QuickExpenseView: View {
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("quickExpense.lastWalletSyncID") private var lastWalletSyncID = ""
     @AppStorage("quickExpense.lastCategorySyncID") private var lastCategorySyncID = ""
+    @ObservedObject private var moneyRuntimeDebug = MoneyRuntimeDebugStore.shared
 
     @Query(sort: \Category.name) private var categories: [Category]
     @Query(sort: \Wallet.name) private var wallets: [Wallet]
@@ -148,6 +152,11 @@ struct QuickExpenseView: View {
             }
             .task {
                 applySelectionDefaults()
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "QuickExpenseView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
                 await focusAmountField()
             }
             .onChange(of: wallets.count) {
@@ -167,7 +176,11 @@ struct QuickExpenseView: View {
                 }
             }
             .onChange(of: amountText) {
-                amountText = SecurityValidation.boundedAmountInput(amountText)
+                MoneyRuntimeDebug.recordLiveField(
+                    path: "QuickExpenseView/RawAmountTextField",
+                    text: amountText,
+                    parsed: parsedAmount
+                )
             }
             .onChange(of: note) {
                 note = SecurityValidation.boundedMultilineInput(
@@ -195,10 +208,17 @@ struct QuickExpenseView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            TextField(L10n.text("common.amount_placeholder", lang: uiLanguageCode), text: $amountText)
-                .focused($isAmountFieldFocused)
-                .keyboardType(.decimalPad)
-                .font(.system(size: 40, weight: .semibold, design: .rounded))
+            RawAmountTextField(
+                placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                text: $amountText,
+                traceID: "quick_expense.amount",
+                accessibilityIdentifier: "quick_expense.amount",
+                accessibilityLabel: L10n.text("a11y.quick_expense_amount", lang: uiLanguageCode),
+                runtimeMarker: "QE-AMOUNT",
+                font: amountFieldFont,
+                isFocused: $isAmountFieldFocused
+            )
+                .accessibilityIdentifier("quick_expense.amount")
                 .padding(.horizontal, 18)
                 .padding(.vertical, 20)
                 .background(.background)
@@ -207,7 +227,12 @@ struct QuickExpenseView: View {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
                         .stroke(amountValidationMessage == nil ? Color.clear : Color.red.opacity(0.5), lineWidth: 1)
                 }
-                .accessibilityLabel(L10n.text("a11y.quick_expense_amount", lang: uiLanguageCode))
+
+            MoneyRuntimeDebugPanel(
+                runtimePath: "QuickExpenseView/RawAmountTextField",
+                fieldText: moneyRuntimeDebug.liveFieldText,
+                parsedText: moneyRuntimeDebug.liveParsedText
+            )
 
             if let amountValidationMessage {
                 Text(amountValidationMessage)
@@ -407,9 +432,24 @@ struct QuickExpenseView: View {
         }
     }
 
+#if canImport(UIKit)
+    private var amountFieldFont: UIFont {
+        let baseFont = UIFont.systemFont(ofSize: 40, weight: .semibold)
+        let roundedDescriptor = baseFont.fontDescriptor.withDesign(.rounded) ?? baseFont.fontDescriptor
+        return UIFont(descriptor: roundedDescriptor, size: 40)
+    }
+#else
+    private var amountFieldFont: Any? { nil }
+#endif
+
     private func saveExpense() {
         guard !isSaving else { return }
         guard let amount = parsedAmount, let wallet = selectedWallet, let category = selectedCategory else { return }
+        MoneyRuntimeDebug.recordSaveAttempt(
+            path: "QuickExpenseView/RawAmountTextField",
+            rawText: amountText,
+            parsed: amount
+        )
 
         isSaving = true
         saveErrorMessage = ""

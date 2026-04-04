@@ -1,0 +1,3 @@
+// Release-only config. Archive builds must include real secrets.
+#include "AppConfig.xcconfig"
+#include "Secrets.xcconfig"

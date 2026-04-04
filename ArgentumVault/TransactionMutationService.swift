@@ -112,6 +112,19 @@ enum TransactionMutationService {
         request.wallet?.updatedAt = now
         request.transferWallet?.updatedAt = now
         try modelContext.save()
+        MoneyInputTrace.log(
+            """
+            persisted_transaction syncID=\(savedTransaction.syncID) \
+            amount=\(savedTransaction.amount) \
+            currency=\(savedTransaction.currencyCode) \
+            formatted=\(DecimalFormatter.string(from: savedTransaction.amount, maximumFractionDigits: 6))
+            """
+        )
+        MoneyRuntimeDebug.recordPersist(
+            syncID: savedTransaction.syncID,
+            amount: savedTransaction.amount,
+            currency: savedTransaction.currencyCode
+        )
         return savedTransaction
     }
 

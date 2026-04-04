@@ -179,6 +179,14 @@
 "settings.account.confirm_password" = "Подтвердите пароль";
 "settings.account.connected" = "Подключено через Apple ID";
 "settings.account.sign_out" = "Выйти";
+"settings.account.danger_zone" = "Опасная зона";
+"settings.account.delete_account" = "Удалить аккаунт";
+"settings.account.delete_body" = "Удаление аккаунта уберёт данные с этого устройства и из облачной резервной копии. Это действие нельзя отменить.";
+"settings.account.delete_title" = "Удалить аккаунт?";
+"settings.account.delete_message" = "Это навсегда удалит ваш аккаунт Argentum Vault и связанные данные. Это действие нельзя отменить.";
+"settings.account.delete_success_title" = "Аккаунт удалён";
+"settings.account.delete_success_message" = "Ваш аккаунт Argentum Vault удалён, и вы вышли из приложения. Если часть очистки ещё завершается, она закончится автоматически.";
+"settings.account.deleting" = "Удаление аккаунта...";
 "settings.account.sync_hint_pro" = "Pro: данные синхронизируются и резервируются в облаке аккаунта.";
 "settings.account.sync_hint_free" = "Free: базовые функции доступны, данные хранятся только локально.";
 "settings.account.authorizing" = "Авторизация Apple ID...";
@@ -191,6 +199,10 @@
 "settings.account.error_not_interactive" = "Сейчас недоступен интерактивный вход.";
 "settings.account.error_unknown" = "Не удалось обработать вход через Apple.";
 "settings.account.error_provider_unavailable" = "Авторизация через Apple пока не настроена для этого приложения.";
+"settings.account.delete_error_title" = "Не удалось удалить аккаунт";
+"settings.account.delete_error_failed" = "Сейчас не удалось удалить аккаунт. Попробуйте ещё раз чуть позже.";
+"settings.account.delete_error_network" = "Не удалось связаться с сервером для удаления аккаунта. Проверьте интернет и попробуйте снова.";
+"settings.account.delete_error_unavailable" = "Сессия больше недоступна. Войдите снова и повторите удаление аккаунта.";
 "settings.account.error_email_invalid" = "Введите корректный email.";
 "settings.account.error_password_short" = "Пароль должен быть не короче 6 символов.";
 "settings.account.error_password_mismatch" = "Пароли не совпадают.";

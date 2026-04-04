@@ -28,6 +28,9 @@ struct ArgentumVaultTests {
             SecurityValidation.sanitizeNote(String(repeating: "x", count: 501))
             == String(repeating: "x", count: SecurityValidation.maxNoteLength)
         )
+        #expect(SecurityValidation.boundedAmountInput("15,88") == "15,88")
+        #expect(SecurityValidation.boundedAmountInput("1000,25") == "1000,25")
+        #expect(SecurityValidation.boundedAmountInput("1 000,25") == "1 000,25")
     }
 
     @Test func validatesAmountsAndBackupMetadata() async throws {
@@ -39,6 +42,39 @@ struct ArgentumVaultTests {
         #expect(SecurityValidation.sanitizeAccountBucket("not-a-bucket") == nil)
         #expect(SecurityValidation.sanitizeSHA256Hex(String(repeating: "a", count: 64)) == String(repeating: "a", count: 64))
         #expect(SecurityValidation.sanitizeSHA256Hex("short") == nil)
+    }
+
+    @Test func parsesAmountsWithCommaDotAndGroupingSeparators() async throws {
+        let swedish = Locale(identifier: "sv_SE")
+        let us = Locale(identifier: "en_US")
+
+        #expect(DecimalFormatter.parse("132,14", locale: swedish) == Decimal(string: "132.14"))
+        #expect(DecimalFormatter.parse("132.14", locale: swedish) == Decimal(string: "132.14"))
+        #expect(DecimalFormatter.parse("0,99", locale: swedish) == Decimal(string: "0.99"))
+        #expect(DecimalFormatter.parse("1,5", locale: swedish) == Decimal(string: "1.5"))
+        #expect(DecimalFormatter.parse("1000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1 000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1\u{00A0}000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1.000,25", locale: swedish) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("1,000.25", locale: us) == Decimal(string: "1000.25"))
+        #expect(DecimalFormatter.parse("132,14", locale: us) == Decimal(string: "132.14"))
+    }
+
+    @Test func rejectsMalformedMixedSeparatorAmounts() async throws {
+        let swedish = Locale(identifier: "sv_SE")
+        let us = Locale(identifier: "en_US")
+        let german = Locale(identifier: "de_DE")
+
+        #expect(DecimalFormatter.parse("1,000.2,5", locale: swedish) == nil)
+        #expect(DecimalFormatter.parse("1.000,2.5", locale: swedish) == nil)
+        #expect(DecimalFormatter.parse("1..25", locale: swedish) == nil)
+        #expect(DecimalFormatter.parse("1,588", locale: us) == nil)
+        #expect(DecimalFormatter.parse("1.588", locale: german) == nil)
+    }
+
+    @Test func exportsDecimalAmountsWithoutFloatingPointConversion() async throws {
+        #expect(DecimalFormatter.exportString(from: Decimal(string: "132.14")!) == "132.14")
+        #expect(DecimalFormatter.exportString(from: Decimal(string: "1000.25")!) == "1000.25")
     }
 
     @Test func appleNonceHelpersStayStableAndBounded() async throws {

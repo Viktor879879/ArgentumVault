@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import CryptoKit
+import OSLog
 import Supabase
 import PostgREST
 
@@ -102,6 +103,8 @@ enum ICloudBackupManager {
         let updatedAt: Date?
         let sourceDeviceID: String?
         let snapshotVersion: Int?
+        let sourceBucket: String
+        let usedLegacyFallback: Bool
     }
 
     private struct BackupSnapshotMetadata {
@@ -253,7 +256,7 @@ enum ICloudBackupManager {
 
     @discardableResult
     static func restoreIfNeeded(modelContext: ModelContext, accountIdentifier: String) async throws -> Bool {
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         let hasLocalCoreData = hasCoreFinancialData(in: modelContext)
         AppFlowDiagnostics.sync(
             "restoreIfNeeded start accountIdentifier=\(accountIdentifier) bucket=\(bucket) hasLocalCoreData=\(hasLocalCoreData)"
@@ -263,6 +266,9 @@ enum ICloudBackupManager {
             bucket: bucket,
             accountIdentifier: accountIdentifier
         ) {
+            AppDiagnostics.backup.debug(
+                "remote snapshot found targetBucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public) usedLegacyFallback=\(remoteSnapshot.usedLegacyFallback)"
+            )
             if shouldSkipRemoteRestore(
                 remoteSnapshot: remoteSnapshot,
                 modelContext: modelContext,
@@ -292,6 +298,14 @@ enum ICloudBackupManager {
             )
             if didRestore {
                 UserDefaults.standard.removeObject(forKey: lastCloudErrorDefaultsPrefix + bucket)
+                AppDiagnostics.backup.debug(
+                    "restore applied accountIdentifier=\(accountIdentifier, privacy: .public) bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public) usedLegacyFallback=\(remoteSnapshot.usedLegacyFallback)"
+                )
+                promoteLegacySnapshotToCanonicalRemoteIfNeeded(
+                    remoteSnapshot: remoteSnapshot,
+                    canonicalBucket: bucket,
+                    accountIdentifier: accountIdentifier
+                )
             }
             AppFlowDiagnostics.sync(
                 "restoreIfNeeded finished from remote bucket=\(bucket) didRestore=\(didRestore)"
@@ -325,7 +339,7 @@ enum ICloudBackupManager {
     }
 
     static func noteLocalMutation(accountIdentifier: String) {
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         let defaults = UserDefaults.standard
         defaults.set(true, forKey: localDirtyDefaultsPrefix + bucket)
         defaults.set(Date().timeIntervalSince1970, forKey: localMutationTimestampDefaultsPrefix + bucket)
@@ -335,8 +349,36 @@ enum ICloudBackupManager {
         )
     }
 
+    static func deleteBackupArtifacts(for accountIdentifier: String) {
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
+        let defaults = UserDefaults.standard
+        let keysToClear = [
+            lastHashDefaultsPrefix + bucket,
+            lastCloudHashDefaultsPrefix + bucket,
+            lastAttemptDefaultsPrefix + bucket,
+            lastSuccessDefaultsPrefix + bucket,
+            lastCloudSuccessDefaultsPrefix + bucket,
+            lastCloudErrorDefaultsPrefix + bucket,
+            localDirtyDefaultsPrefix + bucket,
+            localMutationTimestampDefaultsPrefix + bucket,
+            snapshotVersionDefaultsPrefix + bucket,
+            lastErrorDefaultsKey,
+            storageCloudKitErrorKey,
+            storageCloudKitReasonKey,
+        ]
+
+        for key in keysToClear {
+            defaults.removeObject(forKey: key)
+        }
+
+        if let backupURL = backupFileURL(for: accountIdentifier),
+           FileManager.default.fileExists(atPath: backupURL.path) {
+            try? FileManager.default.removeItem(at: backupURL)
+        }
+    }
+
     static func hasPendingLocalChanges(accountIdentifier: String) -> Bool {
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         return UserDefaults.standard.bool(forKey: localDirtyDefaultsPrefix + bucket)
     }
 
@@ -346,7 +388,7 @@ enum ICloudBackupManager {
     }
 
     static func consumeIgnoredSaveEventIfNeeded(accountIdentifier: String) -> Bool {
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         guard let count = ignoredSaveEventsByBucket[bucket], count > 0 else {
             return false
         }
@@ -360,7 +402,7 @@ enum ICloudBackupManager {
 
     static func debugStatus(accountIdentifier: String) -> SnapshotDebugStatus {
         let defaults = UserDefaults.standard
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         let localSuccess = dateFromDefaults(defaults, key: lastSuccessDefaultsPrefix + bucket)
         let cloudSuccess = dateFromDefaults(defaults, key: lastCloudSuccessDefaultsPrefix + bucket)
         let localError = defaults.string(forKey: lastErrorDefaultsKey)
@@ -426,15 +468,11 @@ enum ICloudBackupManager {
         ).first else {
             return nil
         }
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         return appSupportURL
             .appendingPathComponent(appSupportBackupFolder, isDirectory: true)
             .appendingPathComponent(bucket, isDirectory: true)
             .appendingPathComponent(backupFileName, isDirectory: false)
-    }
-
-    private static func accountBucket(_ accountIdentifier: String) -> String {
-        hashHex(string: accountIdentifier).prefix(24).lowercased()
     }
 
     private static func uploadSnapshotToRemote(
@@ -649,10 +687,16 @@ enum ICloudBackupManager {
         accountIdentifier: String
     ) async throws -> RemoteSnapshotPayload? {
         guard shouldUseSupabaseSync(for: accountIdentifier) else {
+            AppDiagnostics.backup.debug(
+                "remote restore bypassed sync route unavailable accountIdentifier=\(accountIdentifier, privacy: .public) bucket=\(bucket, privacy: .public)"
+            )
             return nil
         }
 
-        if let primarySnapshot = try await fetchSnapshotPayloadFromSupabase(bucket: bucket) {
+        if let primarySnapshot = try await fetchSnapshotPayloadFromSupabase(
+            bucket: bucket,
+            usedLegacyFallback: false
+        ) {
             return primarySnapshot
         }
 
@@ -660,15 +704,27 @@ enum ICloudBackupManager {
             for: accountIdentifier,
             excluding: bucket
         ) {
-            if let legacySnapshot = try await fetchSnapshotPayloadFromSupabase(bucket: legacyBucket) {
+            if let legacySnapshot = try await fetchSnapshotPayloadFromSupabase(
+                bucket: legacyBucket,
+                usedLegacyFallback: true
+            ) {
+                AppDiagnostics.backup.debug(
+                    "remote restore legacy fallback hit accountIdentifier=\(accountIdentifier, privacy: .public) canonicalBucket=\(bucket, privacy: .public) legacyBucket=\(legacyBucket, privacy: .public)"
+                )
                 return legacySnapshot
             }
         }
 
+        AppDiagnostics.backup.debug(
+            "remote restore snapshot not found accountIdentifier=\(accountIdentifier, privacy: .public) bucket=\(bucket, privacy: .public)"
+        )
         return nil
     }
 
-    private static func fetchSnapshotPayloadFromSupabase(bucket: String) async throws -> RemoteSnapshotPayload? {
+    private static func fetchSnapshotPayloadFromSupabase(
+        bucket: String,
+        usedLegacyFallback: Bool
+    ) async throws -> RemoteSnapshotPayload? {
         let client = try EmailAuthManager.syncClient()
         guard let ownerUserID = SecurityValidation.sanitizeUUIDString(try await EmailAuthManager.currentSessionUserID()),
               let safeBucket = SecurityValidation.sanitizeAccountBucket(bucket)
@@ -717,7 +773,9 @@ enum ICloudBackupManager {
             payloadHash: row.payload_hash.flatMap(SecurityValidation.sanitizeSHA256Hex),
             updatedAt: parseServerDate(row.updated_at),
             sourceDeviceID: snapshotMetadata?.sourceDeviceID,
-            snapshotVersion: snapshotMetadata?.snapshotVersion
+            snapshotVersion: snapshotMetadata?.snapshotVersion,
+            sourceBucket: safeBucket,
+            usedLegacyFallback: usedLegacyFallback
         )
     }
 
@@ -741,10 +799,10 @@ enum ICloudBackupManager {
 
         var buckets: [String] = []
         if accountIdentifier.hasPrefix("email_uid:"), !normalizedEmail.isEmpty {
-            buckets.append(accountBucket("email:\(normalizedEmail)"))
+            buckets.append(AccountBucketHasher.bucket(for: "email:\(normalizedEmail)"))
         }
         if accountIdentifier.hasPrefix("email:"), !normalizedUserID.isEmpty {
-            buckets.append(accountBucket("email_uid:\(normalizedUserID)"))
+            buckets.append(AccountBucketHasher.bucket(for: "email_uid:\(normalizedUserID)"))
         }
 
         var seen: Set<String> = [primaryBucket]
@@ -772,9 +830,17 @@ enum ICloudBackupManager {
         bucket: String,
         hasLocalCoreData: Bool
     ) -> Bool {
-        guard hasLocalCoreData else { return false }
+        guard hasLocalCoreData else {
+            AppDiagnostics.backup.debug(
+                "shouldSkipRemoteRestore=false reason=local_store_empty bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+            )
+            return false
+        }
 
         if UserDefaults.standard.bool(forKey: localDirtyDefaultsPrefix + bucket) {
+            AppDiagnostics.backup.debug(
+                "shouldSkipRemoteRestore=true reason=local_dirty bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+            )
             return true
         }
 
@@ -783,6 +849,9 @@ enum ICloudBackupManager {
         if remoteSnapshot.sourceDeviceID == currentDeviceID,
            let remoteSnapshotVersion = remoteSnapshot.snapshotVersion,
            remoteSnapshotVersion <= localSnapshotVersion {
+            AppDiagnostics.backup.debug(
+                "shouldSkipRemoteRestore=true reason=same_device_older_or_equal_snapshot bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public) localVersion=\(localSnapshotVersion) remoteVersion=\(remoteSnapshotVersion)"
+            )
             return true
         }
 
@@ -790,6 +859,9 @@ enum ICloudBackupManager {
            let remoteHash = remoteSnapshot.payloadHash,
            let localHash = try? snapshotContentHash(localSnapshot) {
             if localHash == remoteHash {
+                AppDiagnostics.backup.debug(
+                    "shouldSkipRemoteRestore=true reason=payload_hash_match bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+                )
                 return true
             }
         }
@@ -801,26 +873,62 @@ enum ICloudBackupManager {
 
         guard let lastCloudSuccess else {
             // Device has local data but has never synced this account: prefer remote snapshot.
+            AppDiagnostics.backup.debug(
+                "shouldSkipRemoteRestore=false reason=local_data_without_prior_cloud_sync bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+            )
             return false
         }
 
         if let remoteUpdatedAt = remoteSnapshot.updatedAt,
            let lastLocalMutationAt,
            remoteUpdatedAt <= lastLocalMutationAt {
+            AppDiagnostics.backup.debug(
+                "shouldSkipRemoteRestore=true reason=remote_not_newer_than_local_mutation bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+            )
             return true
         }
 
         if let remoteUpdatedAt = remoteSnapshot.updatedAt,
            remoteUpdatedAt.timeIntervalSince1970 > (lastCloudSuccess.timeIntervalSince1970 + 1) {
+            AppDiagnostics.backup.debug(
+                "shouldSkipRemoteRestore=false reason=remote_newer_than_last_cloud_success bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+            )
             return false
         }
 
         if let remoteHash = remoteSnapshot.payloadHash,
            remoteHash != lastCloudHash {
+            AppDiagnostics.backup.debug(
+                "shouldSkipRemoteRestore=false reason=remote_hash_differs_from_last_cloud_hash bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+            )
             return false
         }
 
+        AppDiagnostics.backup.debug(
+            "shouldSkipRemoteRestore=true reason=remote_not_newer bucket=\(bucket, privacy: .public) sourceBucket=\(remoteSnapshot.sourceBucket, privacy: .public)"
+        )
         return true
+    }
+
+    private static func promoteLegacySnapshotToCanonicalRemoteIfNeeded(
+        remoteSnapshot: RemoteSnapshotPayload,
+        canonicalBucket: String,
+        accountIdentifier: String
+    ) {
+        guard remoteSnapshot.usedLegacyFallback else { return }
+        guard remoteSnapshot.sourceBucket != canonicalBucket else { return }
+
+        let payloadHash = remoteSnapshot.payloadHash ?? hashHex(data: remoteSnapshot.payload)
+        AppDiagnostics.backup.debug(
+            "promoting legacy snapshot to canonical remote accountIdentifier=\(accountIdentifier, privacy: .public) legacyBucket=\(remoteSnapshot.sourceBucket, privacy: .public) canonicalBucket=\(canonicalBucket, privacy: .public)"
+        )
+        uploadSnapshotToRemote(
+            payload: remoteSnapshot.payload,
+            payloadHash: payloadHash,
+            bucket: canonicalBucket,
+            accountIdentifier: accountIdentifier,
+            force: true
+        )
     }
 
     private static func encodeSnapshotPayload(from context: ModelContext, bucket: String) throws -> Data {
