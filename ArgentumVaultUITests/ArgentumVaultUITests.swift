@@ -123,6 +123,24 @@ final class ArgentumVaultUITests: XCTestCase {
     }
 
     @MainActor
+    func testNewTransactionAmountFieldSavesCommaDecimalAsZeroPointNinetyNine() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        openAddTransaction(in: app)
+        selectWalletAndCategory(in: app)
+
+        let amountField = amountField(in: app)
+        typeAmountCharacterByCharacter("0,99", into: amountField)
+        XCTAssertEqual(amountField.value as? String, "0,99")
+
+        saveAddTransaction(in: app)
+
+        XCTAssertTrue(app.staticTexts["-0.99 SEK"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["-99 SEK"].exists)
+    }
+
+    @MainActor
     func testAddTransactionAcceptsCommaDecimalSeparator() throws {
         let app = configuredAppForMoneyInputTrace()
         app.launch()
