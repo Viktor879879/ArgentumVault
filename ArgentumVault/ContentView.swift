@@ -64,6 +64,13 @@ private enum RootTab: Hashable {
     case settings
 }
 
+private enum RootContentState: String {
+    case accountSetup
+    case preferencesSetup
+    case baseCurrencySetup
+    case main
+}
+
 private enum TransactionHistoryDateFilterMode: String, CaseIterable, Identifiable {
     case all
     case day
@@ -111,6 +118,8 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var showGlobalPaywall = false
     @State private var selectedTab: RootTab = .home
+    @State private var isShowingQuickExpense = false
+    @State private var showAccountDeletionNotice = false
     
     private var uiLanguageCode: String {
         if appLanguageCode == "system" {
@@ -325,7 +334,7 @@ struct ContentView: View {
         }
         guard canPresentQuickExpense else { return }
 
-        selectedRootTab = .home
+        selectedTab = .home
         quickExpenseRouter.consumePendingRequest()
         isShowingQuickExpense = true
     }
@@ -2915,7 +2924,23 @@ enum NewTransactionAmountInput {
     }
 
     nonisolated static func sanitizeEditingText(_ text: String) -> String {
-        SecurityValidation.boundedAmountInput(normalizeDecimalSeparators(in: text))
+        let normalized = normalizeDecimalSeparators(in: text)
+        var result = ""
+        var hasDecimalSeparator = false
+
+        for character in normalized.prefix(SecurityValidation.maxAmountInputLength) {
+            if character.isNumber {
+                result.append(character)
+                continue
+            }
+
+            if (character == "," || character == ".") && !hasDecimalSeparator {
+                result.append(character)
+                hasDecimalSeparator = true
+            }
+        }
+
+        return result
     }
 }
 
@@ -3829,11 +3854,26 @@ struct AddTransactionView: View {
     }
     
     private var normalizedAmountText: String {
-        NewTransactionAmountInput.normalizeDecimalSeparators(in: amountText)
+        let sanitized = NewTransactionAmountInput.sanitizeEditingText(amountText)
+        guard !sanitized.isEmpty else { return "" }
+
+        let prefixed: String
+        if sanitized.first == "," || sanitized.first == "." {
+            prefixed = "0\(sanitized)"
+        } else {
+            prefixed = sanitized
+        }
+
+        return prefixed.replacingOccurrences(of: ",", with: ".")
     }
 
     private var parsedAmount: Decimal? {
-        SecurityValidation.sanitizePositiveAmount(DecimalFormatter.parseOrEvaluate(normalizedAmountText))
+        guard !normalizedAmountText.isEmpty, normalizedAmountText.last?.isNumber == true else {
+            return nil
+        }
+        return SecurityValidation.sanitizePositiveAmount(
+            Decimal(string: normalizedAmountText, locale: Locale(identifier: "en_US_POSIX"))
+        )
     }
     
     private var parsedTransferAmount: Decimal? {
@@ -3841,9 +3881,7 @@ struct AddTransactionView: View {
     }
 
     private var calculatedAmountResult: Decimal? {
-        guard DecimalFormatter.parse(normalizedAmountText) == nil else { return nil }
-        guard let value = AmountExpressionEvaluator.evaluate(normalizedAmountText), value > 0 else { return nil }
-        return value
+        return nil
     }
 
     private var calculatedTransferAmountResult: Decimal? {
@@ -5409,7 +5447,7 @@ struct SettingsView: View {
         return "\(rule.frequency.title(lang: uiLanguageCode)) • \(L10n.text("recurring.every", lang: uiLanguageCode)) \(rule.interval)"
     }
 
-    private func handleAppleSignIn(result: Result<ASAuthorization, Error>) {
+    private func handleAppleSignIn(result: Result<AppleSignInAuthorization, Error>) {
         switch result {
         case .success(let payload):
             guard let credential = payload.authorization.credential as? ASAuthorizationAppleIDCredential else {
@@ -6137,6 +6175,7 @@ struct AddRecurringRuleView: View {
                                 .font(.caption)
                                 .foregroundStyle(normalizedSelectedMonthDays.isEmpty ? .red : .secondary)
                         }
+                    }
 
                     DatePicker(
                         L10n.text("recurring.next_run", lang: uiLanguageCode),

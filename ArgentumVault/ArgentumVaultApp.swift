@@ -546,6 +546,9 @@ private struct AppBootstrapView: View {
         }
 
         // Emergency fallback: never leave bootstrap screen hanging.
+        let stabilizedScope = currentResolvedAccountScope(
+            allowLegacyEmailStoreFallback: isAuthBootstrapComplete
+        )
         let accountIdentifier = stabilizedScope.storeAccountIdentifier
         let fallbackSelection = AppModelContainerFactory.makeContainerSelection(
             shouldUseCloudKit: false,
@@ -944,20 +947,20 @@ private struct AppBootstrapView: View {
                 isSwitchingContainer = false
             }
 
-            let backupContext = ModelContext(container)
+            let postRestoreBackupContext = ModelContext(container)
             if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
-                modelContext: backupContext,
+                modelContext: postRestoreBackupContext,
                 didRestore: didRestore
             ) {
                 ICloudBackupManager.backupIfNeeded(
-                    modelContext: backupContext,
+                    modelContext: postRestoreBackupContext,
                     accountIdentifier: accountIdentifier,
                     force: false
                 )
                 return
             }
 
-            AppFlowDiagnostics.sync("startup backup task skipped accountIdentifier=\(accountIdentifier) hasLocalData=\(hasLocalData) hasCloudSnapshot=\(hasCloudSnapshot)")
+            AppFlowDiagnostics.sync("startup backup task skipped accountIdentifier=\(accountIdentifier) hasLocalData=\(hasLocalCoreData) hasCloudSnapshot=\(hasCloudSnapshot)")
         }
 
         periodicBackupTask = Task { @MainActor [container] in
@@ -974,13 +977,14 @@ private struct AppBootstrapView: View {
                     continue
                 }
                 if ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: latestAccountIdentifier) {
-                    let backupContext = ModelContext(container)
+                    let pendingBackupContext = ModelContext(container)
                     ICloudBackupManager.backupIfNeeded(
-                        modelContext: backupContext,
+                        modelContext: pendingBackupContext,
                         accountIdentifier: latestAccountIdentifier,
                         force: false
                     )
                 }
+                let backupContext = ModelContext(container)
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
                     accountIdentifier: latestAccountIdentifier,
@@ -1674,6 +1678,12 @@ private enum AppStorageDiagnostics {
 }
 
 private enum StorageModePolicy {
+    static func resolveAccountScope(allowLegacyEmailStoreFallback: Bool = false) -> ResolvedAccountScope {
+        AccountScopeSnapshot().resolvedScope(
+            allowLegacyEmailStoreFallback: allowLegacyEmailStoreFallback
+        )
+    }
+
     static func currentCloudBackupAccountIdentifier() -> String? {
         AccountIdentityPolicy.currentCloudBackupAccountIdentifier()
     }
