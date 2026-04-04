@@ -12,6 +12,10 @@ import OSLog
 
 @main
 struct ArgentumVaultApp: App {
+    init() {
+        AppFlowDiagnostics.launch("App init")
+    }
+
     var body: some Scene {
         WindowGroup {
             AppBootstrapView()
@@ -433,6 +437,7 @@ private struct AppBootstrapView: View {
     @State private var containerEpoch = 0
     @State private var lastKnownAccountIdentifier: String?
     @State private var activeStoreAccountIdentifier: String?
+    @State private var backupPipelineSignature: String?
 
     var body: some View {
         Group {
@@ -444,7 +449,13 @@ private struct AppBootstrapView: View {
                 LoadingBootstrapView()
             }
         }
+        .onAppear {
+            AppFlowDiagnostics.launch(
+                "AppBootstrapView appear scenePhase=\(String(describing: scenePhase)) hasContainer=\(modelContainer != nil) isSwitchingContainer=\(isSwitchingContainer)"
+            )
+        }
         .onOpenURL { url in
+            AppFlowDiagnostics.launch("Deep link received url=\(url.absoluteString)")
             quickExpenseRouter.handle(url: url)
         }
         .task {
@@ -454,6 +465,18 @@ private struct AppBootstrapView: View {
             NotificationCenter.default.publisher(for: ModelContext.didSave),
             perform: handleModelContextSaveNotification
         )
+        .onChange(of: bootstrapAppleUserID) { _, newValue in
+            handleBootstrapAppleIDChange(newValue)
+        }
+        .onChange(of: bootstrapEmailUserEmail) { _, newValue in
+            handleBootstrapEmailChange(newValue)
+        }
+        .onChange(of: bootstrapEmailUserID) { _, newValue in
+            handleBootstrapEmailUserIDChange(newValue)
+        }
+        .onChange(of: bootstrapAuthMethod) { _, newValue in
+            handleBootstrapAuthMethodChange(newValue)
+        }
         .onReceive(
             NotificationCenter.default.publisher(for: .accountSessionDidChange),
             perform: handleAccountSessionChangeNotification
@@ -478,18 +501,28 @@ private struct AppBootstrapView: View {
         isSwitchingContainer = true
         hasResolvedAccountScope = false
 
-        let initialScope = currentResolvedAccountScope(allowLegacyEmailStoreFallback: false)
-        AppDiagnostics.accountScope.debug("bootstrap begin \(initialScope.debugSummary, privacy: .public)")
+        AppFlowDiagnostics.launch(
+            "bootstrapIfNeeded start appleUserIDEmpty=\(bootstrapAppleUserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) emailEmpty=\(bootstrapEmailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) emailUserIDEmpty=\(bootstrapEmailUserID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) authMethod=\(bootstrapAuthMethod)"
+        )
 
-        if initialScope.needsBootstrapStabilization {
-            AppDiagnostics.accountScope.debug("bootstrap restoreSession start \(initialScope.debugSummary, privacy: .public)")
-            if let restoredSession = await EmailAuthManager.restoreSession() {
-                AccountSessionDefaults.applyRestoredSession(restoredSession)
-                AppDiagnostics.accountScope.debug(
-                    "bootstrap restoreSession resolved method=\(restoredSession.authMethod.rawValue, privacy: .public) email=\(restoredSession.email, privacy: .public) userID=\(restoredSession.userID, privacy: .public)"
-                )
-            } else {
-                AppDiagnostics.accountScope.debug("bootstrap restoreSession returned nil")
+        let normalizedAppleID = bootstrapAppleUserID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEmail = bootstrapEmailUserEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedEmailUserID = bootstrapEmailUserID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if (normalizedEmail.isEmpty || normalizedEmailUserID.isEmpty),
+           let restoredSession = await EmailAuthManager.restoreSession() {
+            AppFlowDiagnostics.launch(
+                "bootstrapIfNeeded restored session authMethod=\(restoredSession.authMethod.rawValue) emailEmpty=\(restoredSession.email.isEmpty) userIDEmpty=\(restoredSession.userID.isEmpty)"
+            )
+            if !restoredSession.email.isEmpty {
+                bootstrapEmailUserEmail = restoredSession.email
+            }
+            bootstrapEmailUserID = restoredSession.userID
+            bootstrapAuthMethod = restoredSession.authMethod.rawValue
+        } else if bootstrapAuthMethod.isEmpty {
+            if !normalizedAppleID.isEmpty {
+                bootstrapAuthMethod = "apple"
+            } else if !normalizedEmail.isEmpty {
+                bootstrapAuthMethod = "email"
             }
         } else if bootstrapAuthMethod.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let inferredAuthMethod = currentResolvedAccountScope(
@@ -498,15 +531,19 @@ private struct AppBootstrapView: View {
             bootstrapAuthMethod = inferredAuthMethod
         }
 
-        isAuthBootstrapComplete = true
-        let stabilizedScope = currentResolvedAccountScope(allowLegacyEmailStoreFallback: true)
-        AppDiagnostics.accountScope.debug("bootstrap stabilized \(stabilizedScope.debugSummary, privacy: .public)")
-
-        await switchContainerIfNeeded(
-            refreshEntitlements: true,
-            reason: "bootstrap_complete"
+        AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: bootstrapAuthMethod,
+            appleUserID: bootstrapAppleUserID,
+            emailUserEmail: bootstrapEmailUserEmail,
+            emailUserID: bootstrapEmailUserID,
+            reason: "bootstrapIfNeeded.syncCurrentAccount"
         )
-        guard modelContainer == nil else { return }
+
+        await switchContainerIfNeeded(refreshEntitlements: true, reason: "bootstrap.initial")
+        guard modelContainer == nil else {
+            AppFlowDiagnostics.launch("bootstrapIfNeeded end resolved existing container")
+            return
+        }
 
         // Emergency fallback: never leave bootstrap screen hanging.
         let accountIdentifier = stabilizedScope.storeAccountIdentifier
@@ -535,28 +572,15 @@ private struct AppBootstrapView: View {
         AppDiagnostics.accountScope.debug(
             "bootstrap emergency fallback store=\(fallbackSelection.storeName, privacy: .public) bucket=\(fallbackSelection.accountBucket, privacy: .public)"
         )
+        AppFlowDiagnostics.launch(
+            "bootstrapIfNeeded fallback container assigned accountIdentifier=\(accountIdentifier ?? "guest")"
+        )
     }
 
     private func scheduleContainerSwitch(refreshEntitlements: Bool, reason: String) {
-        guard isAuthBootstrapComplete else {
-            AppDiagnostics.accountScope.debug("scheduleContainerSwitch ignored reason=\(reason, privacy: .public) bootstrap incomplete")
-            return
-        }
-        let scope = currentResolvedAccountScope(allowLegacyEmailStoreFallback: true)
-        guard !scope.needsBootstrapStabilization else {
-            AppDiagnostics.accountScope.debug(
-                "scheduleContainerSwitch deferred reason=\(reason, privacy: .public) \(scope.debugSummary, privacy: .public)"
-            )
-            return
-        }
-        AppDiagnostics.accountScope.debug(
-            "scheduleContainerSwitch reason=\(reason, privacy: .public) refreshEntitlements=\(refreshEntitlements) \(scope.debugSummary, privacy: .public)"
-        )
+        AppFlowDiagnostics.launch("scheduleContainerSwitch reason=\(reason) refreshEntitlements=\(refreshEntitlements)")
         Task { @MainActor in
-            await switchContainerIfNeeded(
-                refreshEntitlements: refreshEntitlements,
-                reason: reason
-            )
+            await switchContainerIfNeeded(refreshEntitlements: refreshEntitlements, reason: reason)
         }
     }
 
@@ -566,8 +590,29 @@ private struct AppBootstrapView: View {
         }
     }
 
+    private func handleBootstrapAppleIDChange(_ newValue: String) {
+        AppFlowDiagnostics.launch("AppStorage appleUserID changed empty=\(newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)")
+        scheduleContainerSwitch(refreshEntitlements: false, reason: "appStorage.appleUserID")
+    }
+
+    private func handleBootstrapEmailChange(_ newValue: String) {
+        AppFlowDiagnostics.launch("AppStorage emailUserEmail changed empty=\(newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)")
+        scheduleContainerSwitch(refreshEntitlements: false, reason: "appStorage.emailUserEmail")
+    }
+
+    private func handleBootstrapEmailUserIDChange(_ newValue: String) {
+        AppFlowDiagnostics.launch("AppStorage emailUserID changed empty=\(newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)")
+        scheduleContainerSwitch(refreshEntitlements: false, reason: "appStorage.emailUserID")
+    }
+
+    private func handleBootstrapAuthMethodChange(_ newValue: String) {
+        AppFlowDiagnostics.launch("AppStorage authMethod changed value=\(newValue)")
+        scheduleContainerSwitch(refreshEntitlements: false, reason: "appStorage.authMethod")
+    }
+
     private func handleAccountSessionChangeNotification(_: Notification) {
-        scheduleContainerSwitch(refreshEntitlements: false, reason: "account_session_changed")
+        AppFlowDiagnostics.launch("Notification accountSessionDidChange")
+        scheduleContainerSwitch(refreshEntitlements: false, reason: "notification.accountSessionDidChange")
     }
 
     private func handleModelStoreRestoreWillBeginNotification(_: Notification) {
@@ -579,14 +624,14 @@ private struct AppBootstrapView: View {
     }
 
     private func handleScenePhaseChange(_ newPhase: ScenePhase) {
+        AppFlowDiagnostics.launch("scenePhase changed newPhase=\(String(describing: newPhase))")
         Task { @MainActor in
             if newPhase == .active {
-                await switchContainerIfNeeded(
-                    refreshEntitlements: true,
-                    reason: "scene_active"
-                )
-            } else if newPhase == .inactive || newPhase == .background {
-                performImmediateBackupIfPossible(force: true)
+                await switchContainerIfNeeded(refreshEntitlements: true, reason: "scenePhase.active")
+            } else if newPhase == .background {
+                performImmediateBackupIfPossible(force: true, requiresPendingChanges: true)
+            } else if newPhase == .inactive {
+                AppFlowDiagnostics.sync("scenePhase inactive: immediate backup skipped")
             }
         }
     }
@@ -595,13 +640,16 @@ private struct AppBootstrapView: View {
     private func switchContainerIfNeeded(
         refreshEntitlements: Bool,
         forceRebuild: Bool = false,
-        reason: String
+        reason: String = "unspecified"
     ) async {
+        AppFlowDiagnostics.launch(
+            "switchContainerIfNeeded start reason=\(reason) refreshEntitlements=\(refreshEntitlements) forceRebuild=\(forceRebuild) hasContainer=\(modelContainer != nil) activeAccountIdentifier=\(activeStoreAccountIdentifier ?? "nil") requestedAccountIdentifier=\(StorageModePolicy.currentAccountIdentifier() ?? "nil")"
+        )
         guard !isReconfiguringContainer else {
             hasPendingReconfigureRequest = true
             pendingReconfigureNeedsEntitlementRefresh = pendingReconfigureNeedsEntitlementRefresh || refreshEntitlements
-            AppDiagnostics.accountScope.debug(
-                "switchContainerIfNeeded queued reason=\(reason, privacy: .public) refreshEntitlements=\(refreshEntitlements) forceRebuild=\(forceRebuild)"
+            AppFlowDiagnostics.launch(
+                "switchContainerIfNeeded queued reason=\(reason) pendingRefreshEntitlements=\(pendingReconfigureNeedsEntitlementRefresh)"
             )
             return
         }
@@ -617,10 +665,13 @@ private struct AppBootstrapView: View {
                 Task { @MainActor in
                     await switchContainerIfNeeded(
                         refreshEntitlements: needsRefresh,
-                        reason: "pending_reconfigure"
+                        reason: "queued-reconfigure"
                     )
                 }
             }
+            AppFlowDiagnostics.launch(
+                "switchContainerIfNeeded finish reason=\(reason) hasContainer=\(modelContainer != nil) isSwitchingContainer=\(isSwitchingContainer) containerEpoch=\(containerEpoch)"
+            )
         }
 
         if refreshEntitlements {
@@ -652,6 +703,9 @@ private struct AppBootstrapView: View {
            let existingContainer = modelContainer,
            resolvedShouldUseCloudKit == isCloudStoreEnabled,
            resolvedAccountIdentifier == activeStoreAccountIdentifier {
+            AppFlowDiagnostics.launch(
+                "switchContainerIfNeeded no-op reason=\(reason) requestedCloudBackup=\(resolvedShouldEnableCloudBackup) accountIdentifier=\(resolvedAccountIdentifier ?? "guest")"
+            )
             configureICloudBackupPipeline(
                 requestedCloud: resolvedShouldEnableCloudBackup,
                 usesCloudKit: isCloudStoreEnabled,
@@ -705,8 +759,8 @@ private struct AppBootstrapView: View {
             && resolvedCloudBackupAccountIdentifier != nil
             && !ICloudBackupManager.hasCoreFinancialData(in: ModelContext(selection.container))
 
-        AppDiagnostics.accountScope.debug(
-            "container selection reason=\(reason, privacy: .public) storeName=\(selection.storeName, privacy: .public) bucket=\(selection.accountBucket, privacy: .public) requestedCloud=\(resolvedShouldEnableCloudBackup) didMigrateLegacyEmailStore=\(didMigrateLegacyEmailStore) gateInitialPresentation=\(shouldGateInitialPresentation)"
+        AppFlowDiagnostics.launch(
+            "switchContainerIfNeeded resolved reason=\(reason) shouldSwitchStoreType=\(shouldSwitchStoreType) shouldGateInitialPresentation=\(shouldGateInitialPresentation) previousContainerExists=\(previousContainer != nil) resolvedAccountIdentifier=\(resolvedAccountIdentifier ?? "guest")"
         )
 
         if shouldSwitchStoreType {
@@ -723,6 +777,7 @@ private struct AppBootstrapView: View {
             )
             // Phase 1: remove data-driven view tree while the old container is still valid.
             isSwitchingContainer = true
+            AppFlowDiagnostics.launch("switchContainerIfNeeded showing bootstrap loading for container swap reason=\(reason)")
             await Task.yield()
             try? await Task.sleep(nanoseconds: 120_000_000)
             // Phase 2: drop the old container, then bind the new one.
@@ -732,6 +787,7 @@ private struct AppBootstrapView: View {
 
         if shouldGateInitialPresentation {
             isSwitchingContainer = true
+            AppFlowDiagnostics.launch("switchContainerIfNeeded gating initial presentation for bootstrap restore")
         }
 
         modelContainer = selection.container
@@ -745,6 +801,9 @@ private struct AppBootstrapView: View {
 
         if previousContainerIdentifier != ObjectIdentifier(selection.container) {
             containerEpoch += 1
+            AppFlowDiagnostics.launch(
+                "switchContainerIfNeeded container assigned newEpoch=\(containerEpoch) accountIdentifier=\(resolvedAccountIdentifier ?? "guest")"
+            )
         }
 
         if shouldGateInitialPresentation, let resolvedAccountIdentifier {
@@ -778,20 +837,36 @@ private struct AppBootstrapView: View {
         container: ModelContainer,
         accountIdentifier: String?
     ) {
-        startupBackupTask?.cancel()
-        startupBackupTask = nil
-        periodicBackupTask?.cancel()
-        periodicBackupTask = nil
-
-        guard requestedCloud, let accountIdentifier else {
+        guard requestedCloud, let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else {
+            startupBackupTask?.cancel()
+            startupBackupTask = nil
+            periodicBackupTask?.cancel()
+            periodicBackupTask = nil
             lastKnownAccountIdentifier = nil
-            AppDiagnostics.accountScope.debug("configureICloudBackupPipeline disabled requestedCloud=\(requestedCloud)")
+            backupPipelineSignature = nil
             return
         }
         lastKnownAccountIdentifier = accountIdentifier
         AppDiagnostics.accountScope.debug(
             "configureICloudBackupPipeline accountIdentifier=\(accountIdentifier, privacy: .public) bucket=\(AccountBucketHasher.bucket(for: accountIdentifier), privacy: .public) usesCloudKit=\(usesCloudKit)"
         )
+
+        let pipelineSignature = makeBackupPipelineSignature(
+            requestedCloud: requestedCloud,
+            usesCloudKit: usesCloudKit,
+            container: container,
+            accountIdentifier: accountIdentifier
+        )
+
+        if backupPipelineSignature == pipelineSignature {
+            return
+        }
+
+        startupBackupTask?.cancel()
+        startupBackupTask = nil
+        periodicBackupTask?.cancel()
+        periodicBackupTask = nil
+        backupPipelineSignature = pipelineSignature
 
         startupBackupTask = Task { @MainActor [container] in
             let startupDelay: UInt64 = usesCloudKit ? 10_000_000_000 : 350_000_000
@@ -801,14 +876,53 @@ private struct AppBootstrapView: View {
                 return
             }
 
-            if ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: accountIdentifier) {
-                let backupContext = ModelContext(container)
+            let backupContext = ModelContext(container)
+            let hasPendingChanges = ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: accountIdentifier)
+            let hasCloudSnapshot = ICloudBackupManager.hasSuccessfulCloudBackup(accountIdentifier: accountIdentifier)
+
+            if hasPendingChanges {
+                AppFlowDiagnostics.sync(
+                    "startup backup task uploading pending local changes accountIdentifier=\(accountIdentifier)"
+                )
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
                     accountIdentifier: accountIdentifier,
                     force: false
                 )
                 return
+            }
+
+            let hasLocalCoreData = ICloudBackupManager.hasCoreFinancialData(in: ModelContext(container))
+
+            // Do not run destructive snapshot restore against a live foreground UI that already
+            // has local data-bound views on screen. Gate only the empty-store bootstrap/login path.
+            if scenePhase == .active && hasLocalCoreData {
+                let backupContext = ModelContext(container)
+                if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                    modelContext: backupContext,
+                    didRestore: false
+                ) {
+                    ICloudBackupManager.backupIfNeeded(
+                        modelContext: backupContext,
+                        accountIdentifier: accountIdentifier,
+                        force: false
+                    )
+                }
+                return
+            }
+
+            if scenePhase == .active && !hasLocalCoreData {
+                isSwitchingContainer = true
+                await Task.yield()
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                guard !Task.isCancelled else {
+                    isSwitchingContainer = false
+                    return
+                }
+                guard isBackupPipelineContextCurrent(container: container, accountIdentifier: accountIdentifier) else {
+                    isSwitchingContainer = false
+                    return
+                }
             }
 
             let restoreContext = ModelContext(container)
@@ -822,12 +936,12 @@ private struct AppBootstrapView: View {
                 return
             }
             if didRestore {
-                await switchContainerIfNeeded(
-                    refreshEntitlements: false,
-                    forceRebuild: true,
-                    reason: "startup_restore_rebuild"
-                )
+                refreshViewTreeAfterRestore()
                 return
+            }
+
+            if scenePhase == .active && !hasLocalCoreData {
+                isSwitchingContainer = false
             }
 
             let backupContext = ModelContext(container)
@@ -838,9 +952,12 @@ private struct AppBootstrapView: View {
                 ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
                     accountIdentifier: accountIdentifier,
-                    force: didRestore
+                    force: false
                 )
+                return
             }
+
+            AppFlowDiagnostics.sync("startup backup task skipped accountIdentifier=\(accountIdentifier) hasLocalData=\(hasLocalData) hasCloudSnapshot=\(hasCloudSnapshot)")
         }
 
         periodicBackupTask = Task { @MainActor [container] in
@@ -863,39 +980,12 @@ private struct AppBootstrapView: View {
                         accountIdentifier: latestAccountIdentifier,
                         force: false
                     )
-                    continue
                 }
-                let syncContext = ModelContext(container)
-                let didRestore = (try? await ICloudBackupManager.restoreIfNeeded(
-                    modelContext: syncContext,
-                    accountIdentifier: latestAccountIdentifier
-                )) ?? false
-                guard !Task.isCancelled else { break }
-                guard isBackupPipelineContextCurrent(
-                    container: container,
-                    accountIdentifier: latestAccountIdentifier
-                ) else {
-                    continue
-                }
-                if didRestore {
-                    await switchContainerIfNeeded(
-                        refreshEntitlements: false,
-                        forceRebuild: true,
-                        reason: "periodic_restore_rebuild"
-                    )
-                    continue
-                }
-                let backupContext = ModelContext(container)
-                if ICloudBackupManager.shouldForceBackupAfterRestoreAttempt(
+                ICloudBackupManager.backupIfNeeded(
                     modelContext: backupContext,
-                    didRestore: didRestore
-                ) {
-                    ICloudBackupManager.backupIfNeeded(
-                        modelContext: backupContext,
-                        accountIdentifier: latestAccountIdentifier,
-                        force: didRestore
-                    )
-                }
+                    accountIdentifier: latestAccountIdentifier,
+                    force: false
+                )
             }
         }
     }
@@ -908,28 +998,22 @@ private struct AppBootstrapView: View {
         guard let accountIdentifier = StorageModePolicy.currentCloudBackupAccountIdentifier() else { return }
         guard !isSwitchingContainer else { return }
         guard !ICloudBackupManager.consumeIgnoredSaveEventIfNeeded(accountIdentifier: accountIdentifier) else {
+            AppFlowDiagnostics.sync("ModelContext.didSave ignored after restore accountIdentifier=\(accountIdentifier)")
             return
         }
 
         ICloudBackupManager.noteLocalMutation(accountIdentifier: accountIdentifier)
-
-        saveTriggeredBackupTask?.cancel()
-        saveTriggeredBackupTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            guard !Task.isCancelled else { return }
-            performImmediateBackupIfPossible(force: false)
-        }
+        AppFlowDiagnostics.sync("ModelContext.didSave noted local mutation accountIdentifier=\(accountIdentifier)")
+        scheduleDebouncedBackupAfterLocalMutation(accountIdentifier: accountIdentifier)
     }
 
     @MainActor
     private func handleModelStoreRestoreWillBegin() {
-        guard modelContainer != nil else { return }
-        isSwitchingContainer = true
+        AppFlowDiagnostics.sync("Notification modelStoreRestoreWillBegin")
     }
 
     @MainActor
     private func handleModelStoreDidRestore(_ notification: Notification) {
-        guard modelContainer != nil else { return }
         let didRestore = (notification.userInfo?["restored"] as? Bool) ?? true
         if didRestore {
             Task { @MainActor in
@@ -945,10 +1029,21 @@ private struct AppBootstrapView: View {
     }
 
     @MainActor
+    private func refreshViewTreeAfterRestore() {
+        guard modelContainer != nil else {
+            isSwitchingContainer = false
+            return
+        }
+        containerEpoch += 1
+        isSwitchingContainer = false
+    }
+
+    @MainActor
     private func performImmediateBackupIfPossible(
         container: ModelContainer? = nil,
         accountIdentifier: String? = nil,
-        force: Bool = false
+        force: Bool = false,
+        requiresPendingChanges: Bool = false
     ) {
         let resolvedContainer = container ?? modelContainer
         guard let resolvedContainer else { return }
@@ -956,12 +1051,56 @@ private struct AppBootstrapView: View {
             ?? StorageModePolicy.currentCloudBackupAccountIdentifier()
             ?? lastKnownAccountIdentifier
         guard let resolvedAccountIdentifier, !resolvedAccountIdentifier.isEmpty else { return }
+
+        let hasPendingChanges = ICloudBackupManager.hasPendingLocalChanges(accountIdentifier: resolvedAccountIdentifier)
         let backupContext = ModelContext(resolvedContainer)
+        let hasCloudSnapshot = ICloudBackupManager.hasSuccessfulCloudBackup(accountIdentifier: resolvedAccountIdentifier)
+        let shouldSeedInitialSnapshot = !hasCloudSnapshot
+            && ICloudBackupManager.hasCoreFinancialData(in: backupContext)
+        guard !requiresPendingChanges || hasPendingChanges || shouldSeedInitialSnapshot else {
+            AppFlowDiagnostics.sync(
+                "performImmediateBackupIfPossible skipped because no pending changes accountIdentifier=\(resolvedAccountIdentifier)"
+            )
+            return
+        }
+        AppFlowDiagnostics.sync(
+            "performImmediateBackupIfPossible force=\(force) accountIdentifier=\(resolvedAccountIdentifier) hasPendingChanges=\(hasPendingChanges) shouldSeedInitialSnapshot=\(shouldSeedInitialSnapshot)"
+        )
         ICloudBackupManager.backupIfNeeded(
             modelContext: backupContext,
             accountIdentifier: resolvedAccountIdentifier,
             force: force
         )
+    }
+
+    @MainActor
+    private func scheduleDebouncedBackupAfterLocalMutation(accountIdentifier: String) {
+        guard let currentContainer = modelContainer else { return }
+        saveTriggeredBackupTask?.cancel()
+        AppFlowDiagnostics.sync(
+            "ModelContext.didSave scheduled debounced upload accountIdentifier=\(accountIdentifier) delaySeconds=\(ICloudBackupManager.saveDrivenDebounceNanoseconds / 1_000_000_000)"
+        )
+        saveTriggeredBackupTask = Task { @MainActor [currentContainer] in
+            try? await Task.sleep(nanoseconds: ICloudBackupManager.saveDrivenDebounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            guard isBackupPipelineContextCurrent(
+                container: currentContainer,
+                accountIdentifier: accountIdentifier
+            ) else {
+                AppFlowDiagnostics.sync(
+                    "ModelContext.didSave cancelled debounced upload because context changed accountIdentifier=\(accountIdentifier)"
+                )
+                return
+            }
+            AppFlowDiagnostics.sync("ModelContext.didSave firing debounced upload accountIdentifier=\(accountIdentifier)")
+            performImmediateBackupIfPossible(
+                container: currentContainer,
+                accountIdentifier: accountIdentifier,
+                force: false,
+                requiresPendingChanges: true
+            )
+            saveTriggeredBackupTask = nil
+        }
     }
 
     @MainActor
@@ -974,6 +1113,16 @@ private struct AppBootstrapView: View {
         guard ObjectIdentifier(currentContainer) == ObjectIdentifier(container) else { return false }
         guard StorageModePolicy.currentCloudBackupAccountIdentifier() == accountIdentifier else { return false }
         return true
+    }
+
+    private func makeBackupPipelineSignature(
+        requestedCloud: Bool,
+        usesCloudKit: Bool,
+        container: ModelContainer,
+        accountIdentifier: String
+    ) -> String {
+        let containerID = ObjectIdentifier(container)
+        return "\(requestedCloud)|\(usesCloudKit)|\(containerID)|\(accountIdentifier)"
     }
 
     @MainActor
@@ -993,6 +1142,9 @@ private struct AppBootstrapView: View {
         accountIdentifier: String
     ) async {
         let maxAttempts = 3
+        AppFlowDiagnostics.sync(
+            "performInitialBootstrapRestoreIfNeeded start accountIdentifier=\(accountIdentifier) maxAttempts=\(maxAttempts)"
+        )
 
         for attempt in 0..<maxAttempts {
             guard !Task.isCancelled else { return }
@@ -1000,6 +1152,7 @@ private struct AppBootstrapView: View {
                 container: container,
                 accountIdentifier: accountIdentifier
             ) else {
+                AppFlowDiagnostics.sync("performInitialBootstrapRestoreIfNeeded cancelled because context changed")
                 return
             }
             let restoreContext = ModelContext(container)
@@ -1008,12 +1161,15 @@ private struct AppBootstrapView: View {
                 accountIdentifier: accountIdentifier
             )) ?? false
             if didRestore {
+                AppFlowDiagnostics.sync("performInitialBootstrapRestoreIfNeeded restored snapshot on attempt=\(attempt + 1)")
                 return
             }
             if ICloudBackupManager.hasCoreFinancialData(in: ModelContext(container)) {
+                AppFlowDiagnostics.sync("performInitialBootstrapRestoreIfNeeded found local data on attempt=\(attempt + 1)")
                 return
             }
             guard attempt < (maxAttempts - 1) else { return }
+            AppFlowDiagnostics.sync("performInitialBootstrapRestoreIfNeeded retrying attempt=\(attempt + 2)")
             try? await Task.sleep(nanoseconds: 700_000_000)
         }
     }
@@ -1081,6 +1237,12 @@ private struct LoadingBootstrapView: View {
                     .tint(.secondary)
             }
             .padding(.horizontal, 20)
+        }
+        .onAppear {
+            AppFlowDiagnostics.launch("LoadingBootstrapView appear")
+        }
+        .onDisappear {
+            AppFlowDiagnostics.launch("LoadingBootstrapView disappear")
         }
     }
 }
@@ -1512,29 +1674,12 @@ private enum AppStorageDiagnostics {
 }
 
 private enum StorageModePolicy {
-    static func resolveAccountScope(
-        allowLegacyEmailStoreFallback: Bool = true
-    ) -> ResolvedAccountScope {
-        AccountScopeSnapshot(defaults: .standard)
-            .resolvedScope(allowLegacyEmailStoreFallback: allowLegacyEmailStoreFallback)
-    }
-
     static func currentCloudBackupAccountIdentifier() -> String? {
-        resolveAccountScope().cloudBackupAccountIdentifier
-    }
-
-    static func currentAppleAccountIdentifier() -> String? {
-        resolveAccountScope().snapshot.appleAccountIdentifier
-    }
-
-    static func currentEmailAccountIdentifier() -> String? {
-        let resolvedScope = resolveAccountScope()
-        return resolvedScope.canonicalEmailAccountIdentifier
-            ?? resolvedScope.legacyEmailAccountIdentifier
+        AccountIdentityPolicy.currentCloudBackupAccountIdentifier()
     }
 
     static func currentAccountIdentifier() -> String? {
-        resolveAccountScope().storeAccountIdentifier
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     static func shouldRequestCloudKitStorage() -> Bool {

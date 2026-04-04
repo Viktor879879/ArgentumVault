@@ -466,15 +466,18 @@ private struct AdMobBannerView: UIViewRepresentable {
 
     func updateUIView(_ uiView: BannerView, context: Context) {
         uiView.rootViewController = UIApplication.activeRootViewController
+        var needsReload = false
         if uiView.adUnitID != adUnitID {
-            loadObserver.reset()
             uiView.adUnitID = adUnitID
-            uiView.load(Request())
+            needsReload = true
         }
         let size = currentOrientationAnchoredAdaptiveBanner(width: width)
         if !isAdSizeEqualToSize(size1: uiView.adSize, size2: size) {
             uiView.adSize = size
-            loadObserver.reset()
+            needsReload = true
+        }
+        if needsReload {
+            context.coordinator.prepareForReload()
             uiView.load(Request())
         }
     }
@@ -490,8 +493,16 @@ private final class BannerLoadObserver: NSObject, ObservableObject, BannerViewDe
     @Published var didFail = false
 
     func reset() {
+        guard didLoad || didFail else { return }
         didLoad = false
         didFail = false
+    }
+
+    func prepareForReload() {
+        guard didLoad || didFail else { return }
+        Task { @MainActor in
+            self.reset()
+        }
     }
 
     nonisolated func bannerViewDidReceiveAd(_ bannerView: BannerView) {

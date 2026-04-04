@@ -64,6 +64,25 @@ private enum RootTab: Hashable {
     case settings
 }
 
+private enum TransactionHistoryDateFilterMode: String, CaseIterable, Identifiable {
+    case all
+    case day
+    case period
+
+    var id: String { rawValue }
+
+    func title(lang: String) -> String {
+        switch self {
+        case .all:
+            return L10n.text("history.filter.date.mode.all", lang: lang)
+        case .day:
+            return L10n.text("history.filter.date.mode.day", lang: lang)
+        case .period:
+            return L10n.text("history.filter.date.mode.period", lang: lang)
+        }
+    }
+}
+
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var quickExpenseRouter: QuickExpenseRouter
@@ -76,6 +95,7 @@ struct ContentView: View {
     @AppStorage("forceShowOnboardingOnce_v4") private var forceShowOnboardingOnce = true
     @AppStorage("didRunMigration_v1") private var didRunMigration = false
     @AppStorage("didSeedDefaultCategories_v1") private var didSeedDefaultCategories = false
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -88,12 +108,9 @@ struct ContentView: View {
 #endif
     @StateObject private var rateService = RateService()
     @StateObject private var subscriptionManager = SubscriptionManager()
-    @State private var showSplash = true
     @State private var showOnboarding = false
     @State private var showGlobalPaywall = false
-    @State private var selectedRootTab: RootTab = .home
-    @State private var isShowingQuickExpense = false
-    @State private var showAccountDeletionNotice = false
+    @State private var selectedTab: RootTab = .home
     
     private var uiLanguageCode: String {
         if appLanguageCode == "system" {
@@ -108,12 +125,20 @@ struct ContentView: View {
     }
 
     private var isAccountConnected: Bool {
-        AccountScopeSnapshot(
-            appleUserID: appleUserID,
-            emailUserEmail: emailUserEmail,
-            emailUserID: emailUserID,
-            authMethod: authMethod
-        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier != nil
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var rootContentState: RootContentState {
+        if !isAccountConnected {
+            return .accountSetup
+        }
+        if !didCompleteInitialSetup && baseCurrencyCode.isEmpty {
+            return .preferencesSetup
+        }
+        if baseCurrencyCode.isEmpty {
+            return .baseCurrencySetup
+        }
+        return .main
     }
     
     var body: some View {
@@ -133,7 +158,7 @@ struct ContentView: View {
             } else {
                 AdaptiveRootContainer(maxWidth: 1120) {
                     VStack(spacing: 0) {
-                        TabView(selection: $selectedRootTab) {
+                        TabView(selection: $selectedTab) {
                             HomeView(rateService: rateService)
                                 .tag(RootTab.home)
                                 .tabItem {
@@ -163,18 +188,23 @@ struct ContentView: View {
                 }
                 .animation(.easeInOut(duration: 0.2), value: subscriptionManager.hasProAccess)
             }
-            
-            if showSplash {
-                SplashView()
-                    .transition(.opacity)
-                    .zIndex(1)
-            }
         }
         .dismissKeyboardOnTap()
         .tint(interactiveTint)
+        .onChange(of: selectedTab) {
+#if canImport(UIKit)
+            UIApplication.shared.sendAction(
+                #selector(UIResponder.resignFirstResponder),
+                to: nil,
+                from: nil,
+                for: nil
+            )
+#endif
+        }
         .task {
 #if DEBUG
             if debugResetFirstLaunchOnce {
+                activeAccountIdentifier = ""
                 didCompleteInitialSetup = false
                 didShowOnboarding = false
                 forceShowOnboardingOnce = true
@@ -187,6 +217,7 @@ struct ContentView: View {
                 emailUserEmail = ""
                 emailUserID = ""
                 authMethod = ""
+                AccountIdentityPolicy.clearPersistedAccountIdentifier(reason: "ContentView.debugResetFirstLaunchOnce")
                 debugResetFirstLaunchOnce = false
             }
 #endif
@@ -202,6 +233,13 @@ struct ContentView: View {
                     authMethod: authMethod
                 ).inferredAuthMethodRawValue ?? ""
             }
+            activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+                authMethod: authMethod,
+                appleUserID: appleUserID,
+                emailUserEmail: emailUserEmail,
+                emailUserID: emailUserID,
+                reason: "ContentView.task.syncCurrentAccount"
+            ) ?? ""
             if appCountryCode.isEmpty {
                 appCountryCode = CountryCatalog.defaultCountryCode()
             }
@@ -216,21 +254,14 @@ struct ContentView: View {
                     languageCode: uiLanguageCode,
                     didSeedDefaultCategories: &didSeedDefaultCategories
                 )
-                CategoryLocalizationService.scheduleBackfillAll(
-                    modelContext: modelContext,
-                    currentLanguageCode: uiLanguageCode
-                )
             }
             await subscriptionManager.start()
         }
         .onAppear {
+            AppFlowDiagnostics.launch("ContentView appear rootState=\(rootContentState.rawValue)")
             presentPendingQuickExpenseIfNeeded()
-            presentPendingAccountDeletionNoticeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-                withAnimation(.easeOut(duration: 0.25)) {
-                    showSplash = false
-                }
-                if didCompleteInitialSetup && (!didShowOnboarding || forceShowOnboardingOnce) {
+            if didCompleteInitialSetup && (!didShowOnboarding || forceShowOnboardingOnce) {
+                DispatchQueue.main.async {
                     showOnboarding = true
                 }
             }
@@ -241,37 +272,6 @@ struct ContentView: View {
             if !didShowOnboarding || forceShowOnboardingOnce {
                 showOnboarding = true
             }
-        }
-        .onChange(of: baseCurrencyCode) {
-            presentPendingQuickExpenseIfNeeded()
-        }
-        .onChange(of: appleUserID) {
-            presentPendingQuickExpenseIfNeeded()
-        }
-        .onChange(of: emailUserEmail) {
-            presentPendingQuickExpenseIfNeeded()
-        }
-        .onChange(of: pendingAccountDeletionNotice) {
-            presentPendingAccountDeletionNoticeIfNeeded()
-        }
-        .onChange(of: isAccountConnected) {
-            presentPendingAccountDeletionNoticeIfNeeded()
-        }
-        .onChange(of: showOnboarding) {
-            presentPendingQuickExpenseIfNeeded()
-        }
-        .onChange(of: showGlobalPaywall) {
-            presentPendingQuickExpenseIfNeeded()
-        }
-        .onChange(of: quickExpenseRouter.pendingRequestID) {
-            presentPendingQuickExpenseIfNeeded()
-        }
-        .onChange(of: appLanguageCode) {
-            guard didCompleteInitialSetup else { return }
-            CategoryLocalizationService.scheduleBackfillAll(
-                modelContext: modelContext,
-                currentLanguageCode: uiLanguageCode
-            )
         }
         .fullScreenCover(isPresented: $showOnboarding) {
             OnboardingView(lang: uiLanguageCode) {
@@ -326,7 +326,6 @@ struct ContentView: View {
         guard canPresentQuickExpense else { return }
 
         selectedRootTab = .home
-        showSplash = false
         quickExpenseRouter.consumePendingRequest()
         isShowingQuickExpense = true
     }
@@ -334,20 +333,6 @@ struct ContentView: View {
     private func presentPendingAccountDeletionNoticeIfNeeded() {
         guard !isAccountConnected else { return }
         showAccountDeletionNotice = !pendingAccountDeletionNotice.trimmed.isEmpty
-    }
-}
-
-struct SplashView: View {
-    var body: some View {
-        ZStack {
-            // Keep splash background stable in dark mode to avoid black frame around a light logo asset.
-            Color(hex: "ECECECFF")
-                .ignoresSafeArea()
-            Image("LaunchLogo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 240, height: 240)
-        }
     }
 }
 
@@ -399,6 +384,7 @@ struct FirstLaunchSetupView: View {
     @AppStorage("baseCurrencyCode") private var baseCurrencyCode = ""
     @AppStorage("appCountryCode") private var appCountryCode = ""
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -441,12 +427,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private var isAccountConnected: Bool {
-        AccountScopeSnapshot(
-            appleUserID: appleUserID,
-            emailUserEmail: emailUserEmail,
-            emailUserID: emailUserID,
-            authMethod: authMethod
-        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier != nil
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -700,7 +681,21 @@ struct FirstLaunchSetupView: View {
     }
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
+        AppFlowDiagnostics.launch(
+            "FirstLaunchSetupView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         isAppleAuthInProgress = false
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: credential.user,
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "FirstLaunchSetupView.applyAppleAccountSession"
+        ) ?? ""
+        appleUserID = credential.user
+        emailUserID = session.userID
+        emailUserEmail = session.email
+        authMethod = session.authMethod.rawValue
 
         let resolvedAppleEmail = (credential.email ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let given = credential.fullName?.givenName ?? ""
@@ -726,7 +721,23 @@ struct FirstLaunchSetupView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
-        AccountSessionDefaults.persistEmailSession(session, postChangeNotification: true)
+        AppFlowDiagnostics.launch(
+            "FirstLaunchSetupView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: "",
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "FirstLaunchSetupView.handleEmailAuthSuccess"
+        ) ?? ""
+        appleUserID = ""
+        appleUserEmail = ""
+        appleUserName = ""
+        emailUserEmail = session.email
+        emailUserID = session.userID
+        authMethod = session.authMethod.rawValue
+        SessionEvents.postAccountSessionDidChange()
         triggerProRestoreAfterAuthorization()
         if let accountID = SetupProfileStore.emailAccountID(session.email, userID: session.userID),
            restoreSetupProfileIfPresent(for: accountID) {
@@ -795,12 +806,7 @@ struct FirstLaunchSetupView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        AccountScopeSnapshot(
-            appleUserID: appleUserID,
-            emailUserEmail: emailUserEmail,
-            emailUserID: emailUserID,
-            authMethod: authMethod
-        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {
@@ -903,6 +909,11 @@ struct HomeView: View {
     @State private var knownFolderIDs: Set<PersistentIdentifier> = []
     @State private var didInitializeFolderCollapse = false
     @State private var transactionSearchText = ""
+    @State private var transactionDateFilterMode: TransactionHistoryDateFilterMode = .all
+    @State private var transactionSelectedDay = Date()
+    @State private var transactionRangeStart = Calendar.autoupdatingCurrent.startOfDay(for: Date())
+    @State private var transactionRangeEnd = Date()
+    @FocusState private var isTransactionSearchFocused: Bool
     
     private var ungroupedWallets: [Wallet] {
         wallets.filter { $0.folder == nil }
@@ -933,7 +944,7 @@ struct HomeView: View {
 
     private var filteredTransactions: [Transaction] {
         transactions.filter { transaction in
-            matchesTransactionSearch(transaction)
+            matchesTransactionSearch(transaction) && matchesTransactionDateFilter(transaction)
         }
     }
     
@@ -1028,6 +1039,43 @@ struct HomeView: View {
                     )
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitLabel(.search)
+                    .focused($isTransactionSearchFocused)
+
+                    Picker(
+                        L10n.text("history.filter.date", lang: uiLanguageCode),
+                        selection: $transactionDateFilterMode
+                    ) {
+                        ForEach(TransactionHistoryDateFilterMode.allCases) { mode in
+                            Text(mode.title(lang: uiLanguageCode)).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    if transactionDateFilterMode == .day {
+                        DatePicker(
+                            L10n.text("common.date", lang: uiLanguageCode),
+                            selection: $transactionSelectedDay,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+                    } else if transactionDateFilterMode == .period {
+                        DatePicker(
+                            L10n.text("history.filter.date.start", lang: uiLanguageCode),
+                            selection: $transactionRangeStart,
+                            in: ...transactionRangeEnd,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+
+                        DatePicker(
+                            L10n.text("history.filter.date.end", lang: uiLanguageCode),
+                            selection: $transactionRangeEnd,
+                            in: transactionRangeStart...,
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.compact)
+                    }
 
                     if transactions.isEmpty {
                         Text(L10n.text("home.no_transactions", lang: uiLanguageCode))
@@ -1059,11 +1107,18 @@ struct HomeView: View {
                 }
             }
             .navigationTitle(L10n.text("app.name", lang: uiLanguageCode))
+            .keyboardDismissBehavior()
             .onAppear {
                 initializeFolderCollapseIfNeeded()
             }
+            .onDisappear {
+                dismissTransactionSearchFocus()
+            }
             .onChange(of: walletFolders.count) {
                 syncFolderCollapseState()
+            }
+            .onChange(of: transactionDateFilterMode) {
+                dismissTransactionSearchFocus()
             }
             .onChange(of: baseCurrencyCode) {
                 let snapshots = walletRateSnapshots
@@ -1254,7 +1309,8 @@ struct HomeView: View {
                 rule.nextRunDate = nextRecurringDate(
                     after: scheduledDate,
                     frequency: rule.frequency,
-                    interval: rule.interval
+                    interval: rule.interval,
+                    selectedMonthDays: rule.monthDays
                 )
                 rule.updatedAt = now
                 generatedCount += 1
@@ -1301,7 +1357,12 @@ struct HomeView: View {
         return SecurityValidation.sanitizeNote(fallback)
     }
 
-    private func nextRecurringDate(after date: Date, frequency: RecurrenceFrequency, interval: Int) -> Date {
+    private func nextRecurringDate(
+        after date: Date,
+        frequency: RecurrenceFrequency,
+        interval: Int,
+        selectedMonthDays: [Int] = []
+    ) -> Date {
         let calendar = Calendar.current
         let safeInterval = max(1, interval)
         switch frequency {
@@ -1311,6 +1372,17 @@ struct HomeView: View {
             return calendar.date(byAdding: .weekOfYear, value: safeInterval, to: date) ?? date
         case .monthly:
             return calendar.date(byAdding: .month, value: safeInterval, to: date) ?? date
+        case .monthlySelectedDays:
+            let normalizedDays = RecurringTransactionRule.normalizeMonthDays(selectedMonthDays)
+            guard !normalizedDays.isEmpty else {
+                return calendar.date(byAdding: .month, value: 1, to: date) ?? date
+            }
+            return nextRecurringMonthlySelectedDaysDate(
+                after: date,
+                selectedDays: normalizedDays,
+                timeSource: date,
+                calendar: calendar
+            )
         }
     }
 
@@ -1343,6 +1415,40 @@ struct HomeView: View {
             .lowercased()
 
         return searchBlob.contains(query)
+    }
+
+    private func matchesTransactionDateFilter(_ transaction: Transaction) -> Bool {
+        let calendar = Calendar.autoupdatingCurrent
+
+        switch transactionDateFilterMode {
+        case .all:
+            return true
+        case .day:
+            return calendar.isDate(transaction.date, inSameDayAs: transactionSelectedDay)
+        case .period:
+            let normalizedRange = normalizedTransactionRange
+            return transaction.date >= normalizedRange.start && transaction.date <= normalizedRange.end
+        }
+    }
+
+    private var normalizedTransactionRange: (start: Date, end: Date) {
+        let calendar = Calendar.autoupdatingCurrent
+        let startDate = calendar.startOfDay(for: min(transactionRangeStart, transactionRangeEnd))
+        let endAnchor = calendar.startOfDay(for: max(transactionRangeStart, transactionRangeEnd))
+        let endDate = calendar.date(byAdding: DateComponents(day: 1, second: -1), to: endAnchor) ?? endAnchor
+        return (startDate, endDate)
+    }
+
+    private func dismissTransactionSearchFocus() {
+        isTransactionSearchFocused = false
+#if canImport(UIKit)
+        UIApplication.shared.sendAction(
+            #selector(UIResponder.resignFirstResponder),
+            to: nil,
+            from: nil,
+            for: nil
+        )
+#endif
     }
 
     private func resolvedTransactionType(for transaction: Transaction) -> TransactionType {
@@ -1610,8 +1716,87 @@ extension RecurrenceFrequency {
             return L10n.text("recurring.frequency.weekly", lang: lang)
         case .monthly:
             return L10n.text("recurring.frequency.monthly", lang: lang)
+        case .monthlySelectedDays:
+            return L10n.text("recurring.frequency.monthly_selected_days", lang: lang)
         }
     }
+}
+
+private func normalizedRecurringMonthDaysForMonth(
+    _ selectedDays: [Int],
+    in monthDate: Date,
+    calendar: Calendar = .current
+) -> [Int] {
+    let rawDays = RecurringTransactionRule.normalizeMonthDays(selectedDays)
+    guard let monthRange = calendar.range(of: .day, in: .month, for: monthDate) else {
+        return rawDays
+    }
+    return Array(Set(rawDays.map { min($0, monthRange.count) })).sorted()
+}
+
+private func makeRecurringMonthlyCandidate(
+    monthDate: Date,
+    day: Int,
+    timeSource: Date,
+    calendar: Calendar = .current
+) -> Date? {
+    var monthComponents = calendar.dateComponents([.year, .month], from: monthDate)
+    let timeComponents = calendar.dateComponents([.hour, .minute, .second], from: timeSource)
+    monthComponents.day = day
+    monthComponents.hour = timeComponents.hour ?? 0
+    monthComponents.minute = timeComponents.minute ?? 0
+    monthComponents.second = timeComponents.second ?? 0
+    return calendar.date(from: monthComponents)
+}
+
+private func nextRecurringMonthlySelectedDaysDate(
+    after referenceDate: Date,
+    selectedDays: [Int],
+    timeSource: Date,
+    calendar: Calendar = .current
+) -> Date {
+    let searchStart = referenceDate.addingTimeInterval(1)
+
+    for monthOffset in 0..<24 {
+        guard let targetMonth = calendar.date(byAdding: .month, value: monthOffset, to: searchStart) else { continue }
+        let validDays = normalizedRecurringMonthDaysForMonth(selectedDays, in: targetMonth, calendar: calendar)
+        for day in validDays {
+            guard let candidate = makeRecurringMonthlyCandidate(
+                monthDate: targetMonth,
+                day: day,
+                timeSource: timeSource,
+                calendar: calendar
+            ) else {
+                continue
+            }
+            if candidate > referenceDate {
+                return candidate
+            }
+        }
+    }
+
+    return calendar.date(byAdding: .month, value: 1, to: referenceDate) ?? referenceDate
+}
+
+private func firstRecurringMonthlySelectedDaysDate(
+    from referenceDate: Date,
+    selectedDays: [Int],
+    timeSource: Date,
+    calendar: Calendar = .current
+) -> Date {
+    let baseline = referenceDate.addingTimeInterval(-1)
+    return nextRecurringMonthlySelectedDaysDate(
+        after: baseline,
+        selectedDays: selectedDays,
+        timeSource: timeSource,
+        calendar: calendar
+    )
+}
+
+private func recurringMonthDaysText(_ days: [Int]) -> String {
+    RecurringTransactionRule.normalizeMonthDays(days)
+        .map(String.init)
+        .joined(separator: ", ")
 }
 
 enum AnalyticsMode: String, CaseIterable {
@@ -4142,7 +4327,7 @@ struct AddWalletView: View {
         _name = State(initialValue: wallet?.name ?? "")
         _kind = State(initialValue: wallet?.kind ?? .fiat)
         _assetCode = State(initialValue: wallet?.assetCode ?? defaultCurrencyCode)
-        _balanceText = State(initialValue: wallet.map { DecimalFormatter.editingString(from: $0.balance) } ?? "")
+        _balanceText = State(initialValue: wallet.map { DecimalFormatter.editingString(from: $0.balance) } ?? "0")
         let initialHex = wallet?.colorHex ?? "FFFFFFFF"
         _colorHex = State(initialValue: initialHex)
         _selectedFolderID = State(initialValue: wallet?.folder?.persistentModelID)
@@ -4575,6 +4760,7 @@ struct SettingsView: View {
     @AppStorage("appLanguageCode") private var appLanguageCode = "system"
     @AppStorage("appTheme") private var appTheme = "system"
     @AppStorage("isRoundedAmounts") private var isRoundedAmounts = false
+    @AppStorage(AccountIdentityPolicy.activeAccountIdentifierKey) private var activeAccountIdentifier = ""
     @AppStorage("appleUserID") private var appleUserID = ""
     @AppStorage("appleUserEmail") private var appleUserEmail = ""
     @AppStorage("appleUserName") private var appleUserName = ""
@@ -4647,12 +4833,7 @@ struct SettingsView: View {
     }
 
     private var isAccountConnected: Bool {
-        AccountScopeSnapshot(
-            appleUserID: appleUserID,
-            emailUserEmail: emailUserEmail,
-            emailUserID: emailUserID,
-            authMethod: authMethod
-        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier != nil
+        !activeAccountIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
     var body: some View {
@@ -4915,7 +5096,7 @@ struct SettingsView: View {
                                 }
                                 Text("\(DecimalFormatter.string(from: rule.amount)) \(rule.currencyCode)")
                                     .font(.subheadline.weight(.semibold))
-                                Text("\(rule.frequency.title(lang: uiLanguageCode)) • \(L10n.text("recurring.every", lang: uiLanguageCode)) \(rule.interval)")
+                                Text(recurringScheduleText(for: rule))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Text("\(L10n.text("recurring.next_run", lang: uiLanguageCode)): \(recurringDateText(rule.nextRunDate))")
@@ -5220,7 +5401,15 @@ struct SettingsView: View {
         return formatter.string(from: date)
     }
 
-    private func handleAppleSignIn(result: Result<AppleSignInAuthorization, Error>) {
+    private func recurringScheduleText(for rule: RecurringTransactionRule) -> String {
+        if rule.frequency == .monthlySelectedDays {
+            let daysText = recurringMonthDaysText(rule.monthDays)
+            return "\(rule.frequency.title(lang: uiLanguageCode)) • \(L10n.text("recurring.month_days.summary", lang: uiLanguageCode)) \(daysText)"
+        }
+        return "\(rule.frequency.title(lang: uiLanguageCode)) • \(L10n.text("recurring.every", lang: uiLanguageCode)) \(rule.interval)"
+    }
+
+    private func handleAppleSignIn(result: Result<ASAuthorization, Error>) {
         switch result {
         case .success(let payload):
             guard let credential = payload.authorization.credential as? ASAuthorizationAppleIDCredential else {
@@ -5297,7 +5486,21 @@ struct SettingsView: View {
     }
 
     private func applyAppleAccountSession(_ session: AppAuthSession, credential: ASAuthorizationAppleIDCredential) {
+        AppFlowDiagnostics.launch(
+            "SettingsView applyAppleAccountSession authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
         isAppleAuthInProgress = false
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: credential.user,
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "SettingsView.applyAppleAccountSession"
+        ) ?? ""
+        appleUserID = credential.user
+        emailUserID = session.userID
+        emailUserEmail = session.email
+        authMethod = session.authMethod.rawValue
 
         let resolvedAppleEmail = (credential.email ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let given = credential.fullName?.givenName ?? ""
@@ -5343,7 +5546,16 @@ struct SettingsView: View {
     }
 
     private func clearAccountSession() {
-        AccountSessionDefaults.clearSession(postChangeNotification: true)
+        AppFlowDiagnostics.launch("SettingsView clearAccountSession")
+        activeAccountIdentifier = ""
+        AccountIdentityPolicy.clearPersistedAccountIdentifier(reason: "SettingsView.clearAccountSession")
+        appleUserID = ""
+        appleUserEmail = ""
+        appleUserName = ""
+        emailUserEmail = ""
+        emailUserID = ""
+        authMethod = ""
+        SessionEvents.postAccountSessionDidChange()
     }
 
     private func signOutCurrentAccount() {
@@ -5447,7 +5659,23 @@ struct SettingsView: View {
     }
 
     private func handleEmailAuthSuccess(session: AppAuthSession) {
-        AccountSessionDefaults.persistEmailSession(session, postChangeNotification: true)
+        AppFlowDiagnostics.launch(
+            "SettingsView handleEmailAuthSuccess authMethod=\(session.authMethod.rawValue) userIDEmpty=\(session.userID.isEmpty) emailEmpty=\(session.email.isEmpty)"
+        )
+        activeAccountIdentifier = AccountIdentityPolicy.persistCurrentAccountIdentifier(
+            authMethod: session.authMethod.rawValue,
+            appleUserID: "",
+            emailUserEmail: session.email,
+            emailUserID: session.userID,
+            reason: "SettingsView.handleEmailAuthSuccess"
+        ) ?? ""
+        appleUserID = ""
+        appleUserEmail = ""
+        appleUserName = ""
+        emailUserEmail = session.email
+        emailUserID = session.userID
+        authMethod = session.authMethod.rawValue
+        SessionEvents.postAccountSessionDidChange()
         triggerProRestoreAfterAuthorization()
         persistSetupProfileIfPossible()
 #if DEBUG
@@ -5463,12 +5691,7 @@ struct SettingsView: View {
 
 #if DEBUG
     private var currentBackupAccountIdentifier: String? {
-        AccountScopeSnapshot(
-            appleUserID: appleUserID,
-            emailUserEmail: emailUserEmail,
-            emailUserID: emailUserID,
-            authMethod: authMethod
-        ).resolvedScope(allowLegacyEmailStoreFallback: true).cloudBackupAccountIdentifier
+        AccountIdentityPolicy.currentCloudBackupAccountIdentifier()
     }
 
     private func refreshCloudDebugStatus() {
@@ -5486,6 +5709,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
+        AppFlowDiagnostics.sync("SettingsView forceCloudBackupNow accountIdentifier=\(accountIdentifier)")
         guard let token = startCloudDebugOperation(message: "Running forced backup...") else {
             return
         }
@@ -5510,6 +5734,7 @@ struct SettingsView: View {
             cloudDebugMessage = "No active account identifier."
             return
         }
+        AppFlowDiagnostics.sync("SettingsView restoreFromCloudNow accountIdentifier=\(accountIdentifier)")
         guard let token = startCloudDebugOperation(message: "Trying restore from remote...") else {
             return
         }
@@ -5588,12 +5813,7 @@ struct SettingsView: View {
     }
 
     private func currentSetupAccountID() -> String? {
-        AccountScopeSnapshot(
-            appleUserID: appleUserID,
-            emailUserEmail: emailUserEmail,
-            emailUserID: emailUserID,
-            authMethod: authMethod
-        ).resolvedScope(allowLegacyEmailStoreFallback: true).storeAccountIdentifier
+        AccountIdentityPolicy.currentAccountIdentifier()
     }
 
     private func normalizedLanguageCode(_ code: String) -> String {
@@ -5733,6 +5953,7 @@ struct AddRecurringRuleView: View {
     @State private var type: TransactionType
     @State private var frequency: RecurrenceFrequency
     @State private var interval: Int
+    @State private var selectedMonthDays: Set<Int>
     @State private var nextRunDate: Date
     @State private var selectedCategoryID: PersistentIdentifier?
     @State private var selectedWalletID: PersistentIdentifier?
@@ -5750,6 +5971,7 @@ struct AddRecurringRuleView: View {
         _type = State(initialValue: resolvedType)
         _frequency = State(initialValue: rule?.frequency ?? .monthly)
         _interval = State(initialValue: max(1, rule?.interval ?? 1))
+        _selectedMonthDays = State(initialValue: Set(rule?.monthDays ?? []))
         _nextRunDate = State(initialValue: rule?.nextRunDate ?? Date())
         _selectedCategoryID = State(initialValue: rule?.category?.persistentModelID)
         _selectedWalletID = State(initialValue: rule?.wallet?.persistentModelID)
@@ -5787,6 +6009,32 @@ struct AddRecurringRuleView: View {
                 $0.displayName(languageCode: uiLanguageCode)
                     .localizedCaseInsensitiveCompare($1.displayName(languageCode: uiLanguageCode)) == .orderedAscending
             }
+    }
+
+    private var monthDayGridColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(minimum: 32, maximum: 48), spacing: 8), count: 7)
+    }
+
+    private var normalizedSelectedMonthDays: [Int] {
+        RecurringTransactionRule.normalizeMonthDays(Array(selectedMonthDays))
+    }
+
+    private var customMonthlyNextRunDate: Date? {
+        guard frequency == .monthlySelectedDays else { return nil }
+        guard !normalizedSelectedMonthDays.isEmpty else { return nil }
+        return firstRecurringMonthlySelectedDaysDate(
+            from: Date(),
+            selectedDays: normalizedSelectedMonthDays,
+            timeSource: nextRunDate
+        )
+    }
+
+    private var selectedMonthDaysSummary: String {
+        let daysText = recurringMonthDaysText(normalizedSelectedMonthDays)
+        guard !daysText.isEmpty else {
+            return L10n.text("recurring.month_days.empty", lang: uiLanguageCode)
+        }
+        return "\(L10n.text("recurring.month_days.summary", lang: uiLanguageCode)) \(daysText)"
     }
 
     private var canSave: Bool {
@@ -5864,11 +6112,31 @@ struct AddRecurringRuleView: View {
                     }
                     .pickerStyle(.menu)
 
-                    Stepper(
-                        "\(L10n.text("recurring.interval", lang: uiLanguageCode)): \(interval)",
-                        value: $interval,
-                        in: 1...365
-                    )
+                    if frequency == .monthlySelectedDays {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(L10n.text("recurring.month_days.label", lang: uiLanguageCode))
+                                .font(.subheadline.weight(.semibold))
+                            LazyVGrid(columns: monthDayGridColumns, spacing: 8) {
+                                ForEach(1...31, id: \.self) { day in
+                                    Button {
+                                        toggleMonthDay(day)
+                                    } label: {
+                                        Text("\(day)")
+                                            .font(.subheadline.weight(.semibold))
+                                            .frame(maxWidth: .infinity, minHeight: 36)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                    .fill(selectedMonthDays.contains(day) ? Color.accentColor : Color.secondary.opacity(0.12))
+                                            )
+                                            .foregroundStyle(selectedMonthDays.contains(day) ? Color.white : Color.primary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            Text(selectedMonthDaysSummary)
+                                .font(.caption)
+                                .foregroundStyle(normalizedSelectedMonthDays.isEmpty ? .red : .secondary)
+                        }
 
                     DatePicker(
                         L10n.text("recurring.next_run", lang: uiLanguageCode),
@@ -5915,6 +6183,15 @@ struct AddRecurringRuleView: View {
                     self.selectedCategoryID = nil
                 }
             }
+            .onChange(of: frequency) {
+                if frequency == .monthlySelectedDays {
+                    interval = 1
+                    if selectedMonthDays.isEmpty {
+                        let currentDay = Calendar.current.component(.day, from: nextRunDate)
+                        selectedMonthDays = [currentDay]
+                    }
+                }
+            }
             .onAppear {
                 normalizeSelections()
             }
@@ -5930,6 +6207,9 @@ struct AddRecurringRuleView: View {
            categories.first(where: { $0.persistentModelID == selectedCategoryID }) == nil {
             self.selectedCategoryID = nil
         }
+        if frequency == .monthlySelectedDays && selectedMonthDays.isEmpty {
+            selectedMonthDays = [Calendar.current.component(.day, from: nextRunDate)]
+        }
     }
 
     private func saveRule() {
@@ -5939,6 +6219,22 @@ struct AddRecurringRuleView: View {
               let category = categories.first(where: { $0.persistentModelID == categoryID }) else {
             return
         }
+        let monthDays = normalizedSelectedMonthDays
+        if frequency == .monthlySelectedDays && monthDays.isEmpty {
+            return
+        }
+        let resolvedMonthDays = frequency == .monthlySelectedDays ? monthDays : []
+        let resolvedNextRunDate: Date = {
+            if frequency == .monthlySelectedDays {
+                return firstRecurringMonthlySelectedDaysDate(
+                    from: Date(),
+                    selectedDays: resolvedMonthDays,
+                    timeSource: nextRunDate
+                )
+            }
+            return nextRunDate
+        }()
+        let resolvedInterval = frequency == .monthlySelectedDays ? 1 : max(1, interval)
 
         guard let trimmedTitle = SecurityValidation.sanitizeRecurringTitle(title) else { return }
         let trimmedNote = SecurityValidation.sanitizeNote(note)
@@ -5974,6 +6270,22 @@ struct AddRecurringRuleView: View {
             modelContext.insert(newRule)
         }
         try? modelContext.save()
+    }
+
+    private func toggleMonthDay(_ day: Int) {
+        if selectedMonthDays.contains(day) {
+            selectedMonthDays.remove(day)
+        } else {
+            selectedMonthDays.insert(day)
+        }
+    }
+
+    private func recurringDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = DateFormatterCache.locale(for: uiLanguageCode)
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 
