@@ -3808,6 +3808,9 @@ struct AddTransactionView: View {
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var photoData: Data?
     @State private var amountInputSetCounter: Int = 0
+    @State private var newTransactionSaveRawText: String = ""
+    @State private var newTransactionSaveNormalizedText: String = ""
+    @State private var newTransactionSaveDecimalText: String = ""
     
     private let originalWalletID: PersistentIdentifier?
     private let originalTransferWalletID: PersistentIdentifier?
@@ -3854,26 +3857,11 @@ struct AddTransactionView: View {
     }
     
     private var normalizedAmountText: String {
-        let sanitized = NewTransactionAmountInput.sanitizeEditingText(amountText)
-        guard !sanitized.isEmpty else { return "" }
-
-        let prefixed: String
-        if sanitized.first == "," || sanitized.first == "." {
-            prefixed = "0\(sanitized)"
-        } else {
-            prefixed = sanitized
-        }
-
-        return prefixed.replacingOccurrences(of: ",", with: ".")
+        normalizeNewTransactionAmountForSave(amountText) ?? ""
     }
 
     private var parsedAmount: Decimal? {
-        guard !normalizedAmountText.isEmpty, normalizedAmountText.last?.isNumber == true else {
-            return nil
-        }
-        return SecurityValidation.sanitizePositiveAmount(
-            Decimal(string: normalizedAmountText, locale: Locale(identifier: "en_US_POSIX"))
-        )
+        parseNewTransactionAmountForSave(amountText)
     }
     
     private var parsedTransferAmount: Decimal? {
@@ -3890,20 +3878,22 @@ struct AddTransactionView: View {
         return value
     }
 
-    private var tracedAmountTextBinding: Binding<String> {
+    private var newTransactionAmountEditingBinding: Binding<String> {
         Binding(
             get: { amountText },
             set: { newValue in
                 amountInputSetCounter += 1
+                let sanitized = sanitizeNewTransactionAmountEditing(newValue)
                 MoneyInputTrace.log(
                     """
-                    field=add_transaction.amount binding_setter \
+                    field=new_transaction.amount binding_setter \
                     step=\(amountInputSetCounter) \
                     old=\(amountText) \
-                    new=\(newValue)
+                    new=\(newValue) \
+                    sanitized=\(sanitized)
                     """
                 )
-                amountText = newValue
+                amountText = sanitized
             }
         )
     }
@@ -4007,30 +3997,7 @@ struct AddTransactionView: View {
                     }
                 }
                 
-                Section(L10n.text("common.amount", lang: uiLanguageCode)) {
-                    RawAmountTextField(
-                        placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
-                        text: tracedAmountTextBinding,
-                        traceID: "add_transaction.amount",
-                        accessibilityIdentifier: "add_transaction.amount",
-                        runtimeMarker: "AT-AMOUNT",
-                        sanitizeInput: NewTransactionAmountInput.sanitizeEditingText
-                    )
-                    MoneyRuntimeDebugPanel(
-                        runtimePath: "AddTransactionView/RawAmountTextField",
-                        fieldText: moneyRuntimeDebug.liveFieldText,
-                        parsedText: moneyRuntimeDebug.liveParsedText
-                    )
-
-                    if let calculatedAmountResult {
-                        Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button(L10n.text("calculator.use_result", lang: uiLanguageCode)) {
-                            amountText = DecimalFormatter.editingString(from: calculatedAmountResult)
-                        }
-                    }
-                }
+                newTransactionAmountSection
                 
                 Section(L10n.text("settings.currency", lang: uiLanguageCode)) {
                     Text(selectedWalletID == nil ? L10n.text("transaction.select_wallet_for_currency", lang: uiLanguageCode) : currencyCode)
@@ -4106,7 +4073,7 @@ struct AddTransactionView: View {
             .onAppear {
                 normalizeSelections()
                 MoneyRuntimeDebug.recordLiveField(
-                    path: "AddTransactionView/RawAmountTextField",
+                    path: "AddTransactionView/NewTransactionAmountField",
                     text: amountText,
                     parsed: parsedAmount
                 )
@@ -4126,9 +4093,9 @@ struct AddTransactionView: View {
                 applyAutoTransferAmount(force: !isTransferAmountManuallyEdited)
             }
             .onChange(of: amountText) {
-                MoneyInputTrace.log("field=add_transaction.amount after_on_change text=\(amountText)")
+                MoneyInputTrace.log("field=new_transaction.amount after_on_change text=\(amountText)")
                 MoneyRuntimeDebug.recordLiveField(
-                    path: "AddTransactionView/RawAmountTextField",
+                    path: "AddTransactionView/NewTransactionAmountField",
                     text: amountText,
                     parsed: parsedAmount
                 )
@@ -4144,17 +4111,72 @@ struct AddTransactionView: View {
         }
         return appLanguageCode
     }
+
+    @ViewBuilder
+    private var newTransactionAmountDebugView: some View {
+        Text("RAW: \(amountText)")
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+
+        if !newTransactionSaveRawText.isEmpty || !newTransactionSaveNormalizedText.isEmpty || !newTransactionSaveDecimalText.isEmpty {
+            Text("SAVE_RAW=\(newTransactionSaveRawText)")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            Text("SAVE_NORMALIZED=\(newTransactionSaveNormalizedText)")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+            Text("SAVE_DECIMAL=\(newTransactionSaveDecimalText)")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var newTransactionAmountSection: some View {
+        Section(L10n.text("common.amount", lang: uiLanguageCode)) {
+            TextField(
+                L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                text: newTransactionAmountEditingBinding
+            )
+            .keyboardType(.numbersAndPunctuation)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+            .accessibilityIdentifier("add_transaction.amount")
+
+            newTransactionAmountDebugView
+
+            if let calculatedAmountResult {
+                Text("\(L10n.text("calculator.result", lang: uiLanguageCode)): \(DecimalFormatter.string(from: calculatedAmountResult, maximumFractionDigits: 6))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button(L10n.text("calculator.use_result", lang: uiLanguageCode)) {
+                    amountText = DecimalFormatter.editingString(from: calculatedAmountResult)
+                }
+            }
+        }
+    }
     
     private func saveTransaction() -> Bool {
-        guard let amount = parsedAmount else { return false }
+        let saveNormalizedAmountText = normalizeNewTransactionAmountForSave(amountText) ?? ""
+        let saveParsedAmount = parseNewTransactionAmountForSave(amountText)
+        newTransactionSaveRawText = amountText
+        newTransactionSaveNormalizedText = saveNormalizedAmountText
+        newTransactionSaveDecimalText = saveParsedAmount.map { NSDecimalNumber(decimal: $0).stringValue } ?? "nil"
+
+        guard let amount = saveParsedAmount else { return false }
         guard selectedWalletID != nil else { return false }
         MoneyRuntimeDebug.recordSaveAttempt(
-            path: "AddTransactionView/RawAmountTextField",
+            path: "AddTransactionView/NewTransactionAmountField",
             rawText: amountText,
             parsed: amount
         )
         MoneyInputTrace.log(
-            "save_transaction rawAmountText=\(amountText) parsedAmount=\(amount) transactionType=\(transactionType.rawValue)"
+            """
+            save_transaction \
+            rawAmountText=\(amountText) \
+            normalizedAmountText=\(saveNormalizedAmountText) \
+            parsedAmount=\(amount) \
+            transactionType=\(transactionType.rawValue)
+            """
         )
         
         let selectedCategory = categories.first { $0.persistentModelID == selectedCategoryID }
@@ -4226,6 +4248,47 @@ struct AddTransactionView: View {
 #else
         Image(nsImage: image)
 #endif
+    }
+
+    private func sanitizeNewTransactionAmountEditing(_ input: String) -> String {
+        let normalized = NewTransactionAmountInput.normalizeDecimalSeparators(in: input)
+        var result = ""
+        var hasSeparator = false
+
+        for character in normalized.prefix(SecurityValidation.maxAmountInputLength) {
+            if character.isNumber {
+                result.append(character)
+            } else if (character == "," || character == ".") && !hasSeparator {
+                result.append(character)
+                hasSeparator = true
+            }
+        }
+
+        return result
+    }
+
+    private func normalizeNewTransactionAmountForSave(_ raw: String) -> String? {
+        let sanitized = sanitizeNewTransactionAmountEditing(raw)
+        guard !sanitized.isEmpty else { return nil }
+
+        let prefixed: String
+        if sanitized.first == "," || sanitized.first == "." {
+            prefixed = "0\(sanitized)"
+        } else {
+            prefixed = sanitized
+        }
+
+        let normalized = prefixed.replacingOccurrences(of: ",", with: ".")
+        guard normalized.last?.isNumber == true else { return nil }
+        guard normalized.filter({ $0 == "." }).count <= 1 else { return nil }
+        return normalized
+    }
+
+    private func parseNewTransactionAmountForSave(_ raw: String) -> Decimal? {
+        guard let normalized = normalizeNewTransactionAmountForSave(raw) else { return nil }
+        return SecurityValidation.sanitizePositiveAmount(
+            Decimal(string: normalized, locale: Locale(identifier: "en_US_POSIX"))
+        )
     }
     
     private var filteredCategories: [Category] {
