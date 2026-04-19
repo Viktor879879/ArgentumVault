@@ -363,7 +363,7 @@ private final class NumericKeypadInputView: UIInputView {
             outerStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             outerStack.leadingAnchor.constraint(equalTo: leadingAnchor),
             outerStack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            outerStack.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -4)
+            outerStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
         ])
 
         for row in rows {
