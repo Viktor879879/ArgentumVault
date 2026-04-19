@@ -4133,14 +4133,14 @@ struct AddTransactionView: View {
 
     private var newTransactionAmountSection: some View {
         Section(L10n.text("common.amount", lang: uiLanguageCode)) {
-            TextField(
-                L10n.text("common.amount_placeholder", lang: uiLanguageCode),
-                text: newTransactionAmountEditingBinding
+            RawAmountTextField(
+                placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                text: newTransactionAmountEditingBinding,
+                traceID: "new_transaction.amount",
+                accessibilityIdentifier: "add_transaction.amount",
+                sanitizeInput: sanitizeNewTransactionAmountEditing,
+                font: .preferredFont(forTextStyle: .body)
             )
-            .keyboardType(.numbersAndPunctuation)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .accessibilityIdentifier("add_transaction.amount")
 
             newTransactionAmountDebugView
 
