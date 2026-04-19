@@ -337,68 +337,74 @@ private final class NumericKeypadInputView: UIInputView {
     var onKeyTap: (String) -> Void = { _ in }
     var onDelete: () -> Void = {}
 
+    private static let keyLayout: [[String?]] = [
+        ["1", "2", "3"],
+        ["4", "5", "6"],
+        ["7", "8", "9"],
+        [".", "0", nil]
+    ]
+    private var keyButtons: [UIButton] = []
+
     init() {
         super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 260), inputViewStyle: .keyboard)
-        setupLayout()
+        autoresizingMask = [.flexibleWidth]
+        buildButtons()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
 
-    private func setupLayout() {
-        let rows: [[String?]] = [
-            ["1", "2", "3"],
-            ["4", "5", "6"],
-            ["7", "8", "9"],
-            [".", "0", nil]
-        ]
-
-        let outerStack = UIStackView()
-        outerStack.axis = .vertical
-        outerStack.distribution = .fillEqually
-        outerStack.spacing = 1
-        outerStack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(outerStack)
-
-        NSLayoutConstraint.activate([
-            outerStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            outerStack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            outerStack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            outerStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
-        ])
-
-        for row in rows {
-            let rowStack = UIStackView()
-            rowStack.axis = .horizontal
-            rowStack.distribution = .fillEqually
-            rowStack.spacing = 1
+    private func buildButtons() {
+        for row in Self.keyLayout {
             for key in row {
-                rowStack.addArrangedSubview(makeKeyButton(label: key))
+                let button = UIButton(type: .system)
+                if let key {
+                    button.setTitle(key, for: .normal)
+                    button.titleLabel?.font = UIFont.systemFont(ofSize: 26, weight: .light)
+                    button.setTitleColor(.label, for: .normal)
+                    button.addTarget(self, action: #selector(keyTapped(_:)), for: .touchUpInside)
+                } else {
+                    let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
+                    button.setImage(UIImage(systemName: "delete.backward", withConfiguration: config), for: .normal)
+                    button.tintColor = .label
+                    button.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
+                }
+                button.accessibilityIdentifier = key.map { "numpad_key_\($0)" } ?? "numpad_key_delete"
+                addSubview(button)
+                keyButtons.append(button)
             }
-            outerStack.addArrangedSubview(rowStack)
         }
     }
 
-    private func makeKeyButton(label: String?) -> UIButton {
-        let button = UIButton(type: .system)
-        if let label {
-            button.setTitle(label, for: .normal)
-            button.titleLabel?.font = UIFont.systemFont(ofSize: 26, weight: .light)
-            button.setTitleColor(.label, for: .normal)
-            button.addTarget(self, action: #selector(keyTapped(_:)), for: .touchUpInside)
-            button.backgroundColor = UIColor { trait in
-                trait.userInterfaceStyle == .dark ? UIColor(white: 0.22, alpha: 1) : .white
-            }
-        } else {
-            let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-            button.setImage(UIImage(systemName: "delete.backward", withConfiguration: config), for: .normal)
-            button.tintColor = .label
-            button.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
-            button.backgroundColor = UIColor { trait in
-                trait.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : UIColor(white: 0.78, alpha: 1)
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let rows = Self.keyLayout.count
+        let cols = 3
+        let gap: CGFloat = 1
+        let w = bounds.width
+        let h = bounds.height
+        let cellW = (w - gap * CGFloat(cols - 1)) / CGFloat(cols)
+        let cellH = (h - gap * CGFloat(rows - 1)) / CGFloat(rows)
+
+        var idx = 0
+        for (r, row) in Self.keyLayout.enumerated() {
+            for (c, key) in row.enumerated() {
+                let btn = keyButtons[idx]
+                btn.frame = CGRect(
+                    x: CGFloat(c) * (cellW + gap),
+                    y: CGFloat(r) * (cellH + gap),
+                    width: cellW,
+                    height: cellH
+                )
+                btn.backgroundColor = UIColor { trait in
+                    let dark = trait.userInterfaceStyle == .dark
+                    if key == nil {
+                        return dark ? UIColor(white: 0.12, alpha: 1) : UIColor(white: 0.78, alpha: 1)
+                    }
+                    return dark ? UIColor(white: 0.22, alpha: 1) : .white
+                }
+                idx += 1
             }
         }
-        button.accessibilityIdentifier = label.map { "numpad_key_\($0)" } ?? "numpad_key_delete"
-        return button
     }
 
     @objc private func keyTapped(_ sender: UIButton) {
