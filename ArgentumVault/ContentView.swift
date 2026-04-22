@@ -2903,6 +2903,14 @@ enum DecimalFormatter {
         if let parsed = parse(text) {
             return parsed
         }
+        // Fallback: if single comma and no period, treat comma as decimal separator.
+        // This ensures "55,10" or "55,100" always parse as decimals regardless of locale.
+        if text.filter({ $0 == "," }).count == 1, !text.contains(".") {
+            let commaAsDot = text.replacingOccurrences(of: ",", with: ".")
+            if let parsed = parse(commaAsDot) {
+                return parsed
+            }
+        }
         return AmountExpressionEvaluator.evaluate(text)
     }
 }
