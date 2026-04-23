@@ -4146,8 +4146,7 @@ struct AddTransactionView: View {
                 text: newTransactionAmountEditingBinding,
                 traceID: "new_transaction.amount",
                 accessibilityIdentifier: "add_transaction.amount",
-                sanitizeInput: sanitizeNewTransactionAmountEditing,
-                font: .preferredFont(forTextStyle: .body)
+                sanitizeInput: sanitizeNewTransactionAmountEditing
             )
 
             newTransactionAmountDebugView

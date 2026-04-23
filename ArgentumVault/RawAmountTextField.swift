@@ -32,20 +32,13 @@ struct RawAmountTextField: UIViewRepresentable {
         textField.autocapitalizationType = .none
         textField.clearButtonMode = .never
         textField.borderStyle = .none
+        textField.keyboardType = .numberPad
         textField.text = text
         textField.placeholder = placeholder
         textField.accessibilityIdentifier = accessibilityIdentifier
         textField.accessibilityLabel = accessibilityLabel
         textField.adjustsFontForContentSizeCategory = true
         textField.inputAccessoryView = context.coordinator.makeInputAccessoryView()
-        let keypad = NumericKeypadInputView()
-        keypad.onKeyTap = { [weak coordinator = context.coordinator] key in
-            coordinator?.handleCustomKeypadInput(key)
-        }
-        keypad.onDelete = { [weak coordinator = context.coordinator] in
-            coordinator?.handleCustomKeypadDelete()
-        }
-        textField.inputView = keypad
         context.coordinator.updateRuntimeMarker(on: textField)
         if let font {
             textField.font = font
@@ -104,6 +97,15 @@ struct RawAmountTextField: UIViewRepresentable {
 
             let flexibleSpace = UIBarButtonItem(systemItem: .flexibleSpace)
 
+            let dotButton = UIBarButtonItem(
+                title: ".",
+                style: .plain,
+                target: self,
+                action: #selector(insertDotFromAccessory)
+            )
+            dotButton.accessibilityIdentifier = "raw_amount_field.dot"
+            dotButton.accessibilityLabel = "Decimal point"
+
             let doneButton = UIBarButtonItem(
                 title: "Done",
                 style: .done,
@@ -113,7 +115,7 @@ struct RawAmountTextField: UIViewRepresentable {
             doneButton.accessibilityIdentifier = "raw_amount_field.done"
             doneButton.accessibilityLabel = "Done"
 
-            toolbar.items = [flexibleSpace, doneButton]
+            toolbar.items = [flexibleSpace, dotButton, doneButton]
             return toolbar
         }
 
@@ -260,33 +262,9 @@ struct RawAmountTextField: UIViewRepresentable {
             textField.leftViewMode = .always
         }
 
-        func handleCustomKeypadInput(_ key: String) {
-            insertAccessoryText(key)
-        }
-
-        func handleCustomKeypadDelete() {
-            guard let textField = currentTextField else { return }
-            let currentText = textField.text ?? ""
-            let range: NSRange
-            if let sel = textField.selectedTextRange {
-                let loc = textField.offset(from: textField.beginningOfDocument, to: sel.start)
-                let len = textField.offset(from: sel.start, to: sel.end)
-                if len > 0 {
-                    range = NSRange(location: loc, length: len)
-                } else if loc > 0 {
-                    range = NSRange(location: loc - 1, length: 1)
-                } else {
-                    return
-                }
-            } else {
-                let len = (currentText as NSString).length
-                guard len > 0 else { return }
-                range = NSRange(location: len - 1, length: 1)
-            }
-            guard let swiftRange = Range(range, in: currentText) else { return }
-            let newText = currentText.replacingCharacters(in: swiftRange, with: "")
-            let bounded = parent.sanitizeInput(newText)
-            apply(text: bounded, to: textField, desiredCaretOffset: range.location)
+        @objc
+        private func insertDotFromAccessory() {
+            insertAccessoryText(".")
         }
 
         @objc
@@ -330,90 +308,6 @@ struct RawAmountTextField: UIViewRepresentable {
 
             apply(text: boundedText, to: textField, desiredCaretOffset: desiredCaretOffset)
         }
-    }
-}
-
-private final class NumericKeypadInputView: UIInputView {
-    var onKeyTap: (String) -> Void = { _ in }
-    var onDelete: () -> Void = {}
-
-    private static let keyLayout: [[String?]] = [
-        ["1", "2", "3"],
-        ["4", "5", "6"],
-        ["7", "8", "9"],
-        [".", "0", nil]
-    ]
-    private var keyButtons: [UIButton] = []
-
-    init() {
-        super.init(frame: CGRect(x: 0, y: 0, width: 0, height: 260), inputViewStyle: .keyboard)
-        autoresizingMask = [.flexibleWidth]
-        buildButtons()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
-
-    private func buildButtons() {
-        for row in Self.keyLayout {
-            for key in row {
-                let button = UIButton(type: .system)
-                if let key {
-                    button.setTitle(key, for: .normal)
-                    button.titleLabel?.font = UIFont.systemFont(ofSize: 26, weight: .light)
-                    button.setTitleColor(.label, for: .normal)
-                    button.addTarget(self, action: #selector(keyTapped(_:)), for: .touchUpInside)
-                } else {
-                    let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .regular)
-                    button.setImage(UIImage(systemName: "delete.backward", withConfiguration: config), for: .normal)
-                    button.tintColor = .label
-                    button.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
-                }
-                button.accessibilityIdentifier = key.map { "numpad_key_\($0)" } ?? "numpad_key_delete"
-                addSubview(button)
-                keyButtons.append(button)
-            }
-        }
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        let rows = Self.keyLayout.count
-        let cols = 3
-        let gap: CGFloat = 1
-        let w = bounds.width
-        let h = bounds.height
-        let cellW = (w - gap * CGFloat(cols - 1)) / CGFloat(cols)
-        let cellH = (h - gap * CGFloat(rows - 1)) / CGFloat(rows)
-
-        var idx = 0
-        for (r, row) in Self.keyLayout.enumerated() {
-            for (c, key) in row.enumerated() {
-                let btn = keyButtons[idx]
-                btn.frame = CGRect(
-                    x: CGFloat(c) * (cellW + gap),
-                    y: CGFloat(r) * (cellH + gap),
-                    width: cellW,
-                    height: cellH
-                )
-                btn.backgroundColor = UIColor { trait in
-                    let dark = trait.userInterfaceStyle == .dark
-                    if key == nil {
-                        return dark ? UIColor(white: 0.12, alpha: 1) : UIColor(white: 0.78, alpha: 1)
-                    }
-                    return dark ? UIColor(white: 0.22, alpha: 1) : .white
-                }
-                idx += 1
-            }
-        }
-    }
-
-    @objc private func keyTapped(_ sender: UIButton) {
-        guard let title = sender.title(for: .normal) else { return }
-        onKeyTap(title)
-    }
-
-    @objc private func deleteTapped() {
-        onDelete()
     }
 }
 
