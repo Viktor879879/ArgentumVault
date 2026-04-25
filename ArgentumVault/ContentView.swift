@@ -2903,6 +2903,14 @@ enum DecimalFormatter {
         if let parsed = parse(text) {
             return parsed
         }
+        // Fallback: if single comma and no period, treat comma as decimal separator.
+        // This ensures "55,10" or "55,100" always parse as decimals regardless of locale.
+        if text.filter({ $0 == "," }).count == 1, !text.contains(".") {
+            let commaAsDot = text.replacingOccurrences(of: ",", with: ".")
+            if let parsed = parse(commaAsDot) {
+                return parsed
+            }
+        }
         return AmountExpressionEvaluator.evaluate(text)
     }
 }
@@ -4133,14 +4141,13 @@ struct AddTransactionView: View {
 
     private var newTransactionAmountSection: some View {
         Section(L10n.text("common.amount", lang: uiLanguageCode)) {
-            TextField(
-                L10n.text("common.amount_placeholder", lang: uiLanguageCode),
-                text: newTransactionAmountEditingBinding
+            RawAmountTextField(
+                placeholder: L10n.text("common.amount_placeholder", lang: uiLanguageCode),
+                text: newTransactionAmountEditingBinding,
+                traceID: "new_transaction.amount",
+                accessibilityIdentifier: "add_transaction.amount",
+                sanitizeInput: sanitizeNewTransactionAmountEditing
             )
-            .keyboardType(.numbersAndPunctuation)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .accessibilityIdentifier("add_transaction.amount")
 
             newTransactionAmountDebugView
 
