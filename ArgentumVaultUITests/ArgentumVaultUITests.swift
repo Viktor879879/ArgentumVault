@@ -95,10 +95,14 @@ final class ArgentumVaultUITests: XCTestCase {
         let amountField = amountField(in: app)
         typeAmountCharacterByCharacter("10,55", into: amountField)
         XCTAssertEqual(amountField.value as? String, "10,55")
+        XCTAssertTrue(app.staticTexts["RAW: 10,55"].waitForExistence(timeout: 2))
 
         saveAddTransaction(in: app)
 
         XCTAssertTrue(app.staticTexts["-10.55 SEK"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["SAVE_RAW=10,55"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["SAVE_NORMALIZED=10.55"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["SAVE_DECIMAL=10.55"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["-1,055 SEK"].exists)
         XCTAssertFalse(app.staticTexts["-1055 SEK"].exists)
     }
@@ -114,12 +118,38 @@ final class ArgentumVaultUITests: XCTestCase {
         let amountField = amountField(in: app)
         typeAmountCharacterByCharacter("10.55", into: amountField)
         XCTAssertEqual(amountField.value as? String, "10.55")
+        XCTAssertTrue(app.staticTexts["RAW: 10.55"].waitForExistence(timeout: 2))
 
         saveAddTransaction(in: app)
 
         XCTAssertTrue(app.staticTexts["-10.55 SEK"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["SAVE_RAW=10.55"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["SAVE_NORMALIZED=10.55"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["SAVE_DECIMAL=10.55"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.staticTexts["-1,055 SEK"].exists)
         XCTAssertFalse(app.staticTexts["-1055 SEK"].exists)
+    }
+
+    @MainActor
+    func testNewTransactionAmountFieldSavesCommaDecimalAsZeroPointNinetyNine() throws {
+        let app = configuredAppForMoneyInputTrace()
+        app.launch()
+
+        openAddTransaction(in: app)
+        selectWalletAndCategory(in: app)
+
+        let amountField = amountField(in: app)
+        typeAmountCharacterByCharacter("0,99", into: amountField)
+        XCTAssertEqual(amountField.value as? String, "0,99")
+        XCTAssertTrue(app.staticTexts["RAW: 0,99"].waitForExistence(timeout: 2))
+
+        saveAddTransaction(in: app)
+
+        XCTAssertTrue(app.staticTexts["-0.99 SEK"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["SAVE_RAW=0,99"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["SAVE_NORMALIZED=0.99"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.staticTexts["SAVE_DECIMAL=0.99"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.staticTexts["-99 SEK"].exists)
     }
 
     @MainActor

@@ -125,7 +125,7 @@ enum ICloudBackupManager {
 
     static func backupIfNeeded(modelContext: ModelContext, accountIdentifier: String, force: Bool = false) {
         let backupURL = backupFileURL(for: accountIdentifier)
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         let startedAt = Date()
         AppFlowDiagnostics.sync(
             "backupIfNeeded start accountIdentifier=\(accountIdentifier) bucket=\(bucket) force=\(force)"
@@ -227,7 +227,7 @@ enum ICloudBackupManager {
                     at: backupURL.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                try payload.write(to: backupURL, options: .atomic)
+                try payload.write(to: backupURL, options: Data.WritingOptions.atomic)
             }
 
             defaults.set(payloadHash, forKey: lastHashKey)
@@ -383,7 +383,7 @@ enum ICloudBackupManager {
     }
 
     static func hasSuccessfulCloudBackup(accountIdentifier: String) -> Bool {
-        let bucket = accountBucket(accountIdentifier)
+        let bucket = AccountBucketHasher.bucket(for: accountIdentifier)
         return UserDefaults.standard.double(forKey: lastCloudSuccessDefaultsPrefix + bucket) > 0
     }
 

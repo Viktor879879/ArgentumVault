@@ -24,7 +24,6 @@ struct RawAmountTextField: UIViewRepresentable {
             "field=\(traceID) ui_component=RawAmountTextField runtime_marker=\(runtimeMarker ?? "") phase=make_ui_view"
         )
         textField.delegate = context.coordinator
-        textField.keyboardType = .numbersAndPunctuation
         textField.autocorrectionType = .no
         textField.spellCheckingType = .no
         textField.smartInsertDeleteType = .no
@@ -33,6 +32,7 @@ struct RawAmountTextField: UIViewRepresentable {
         textField.autocapitalizationType = .none
         textField.clearButtonMode = .never
         textField.borderStyle = .none
+        textField.keyboardType = .numberPad
         textField.text = text
         textField.placeholder = placeholder
         textField.accessibilityIdentifier = accessibilityIdentifier
@@ -95,14 +95,7 @@ struct RawAmountTextField: UIViewRepresentable {
             let toolbar = UIToolbar()
             toolbar.sizeToFit()
 
-            let commaButton = UIBarButtonItem(
-                title: ",",
-                style: .plain,
-                target: self,
-                action: #selector(insertCommaFromAccessory)
-            )
-            commaButton.accessibilityIdentifier = "raw_amount_field.insert_comma"
-            commaButton.accessibilityLabel = "Insert comma"
+            let flexibleSpace = UIBarButtonItem(systemItem: .flexibleSpace)
 
             let dotButton = UIBarButtonItem(
                 title: ".",
@@ -110,11 +103,8 @@ struct RawAmountTextField: UIViewRepresentable {
                 target: self,
                 action: #selector(insertDotFromAccessory)
             )
-            dotButton.accessibilityIdentifier = "raw_amount_field.insert_dot"
-            dotButton.accessibilityLabel = "Insert dot"
-
-            let flexibleLeading = UIBarButtonItem(systemItem: .flexibleSpace)
-            let flexibleTrailing = UIBarButtonItem(systemItem: .flexibleSpace)
+            dotButton.accessibilityIdentifier = "raw_amount_field.dot"
+            dotButton.accessibilityLabel = "Decimal point"
 
             let doneButton = UIBarButtonItem(
                 title: "Done",
@@ -125,7 +115,7 @@ struct RawAmountTextField: UIViewRepresentable {
             doneButton.accessibilityIdentifier = "raw_amount_field.done"
             doneButton.accessibilityLabel = "Done"
 
-            toolbar.items = [commaButton, dotButton, flexibleLeading, flexibleTrailing, doneButton]
+            toolbar.items = [flexibleSpace, dotButton, doneButton]
             return toolbar
         }
 
@@ -270,11 +260,6 @@ struct RawAmountTextField: UIViewRepresentable {
             }
 
             textField.leftViewMode = .always
-        }
-
-        @objc
-        private func insertCommaFromAccessory() {
-            insertAccessoryText(",")
         }
 
         @objc
