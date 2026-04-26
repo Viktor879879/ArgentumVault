@@ -2943,7 +2943,7 @@ enum NewTransactionAmountInput {
             }
 
             if (character == "," || character == ".") && !hasDecimalSeparator {
-                result.append(character)
+                result.append(".")
                 hasDecimalSeparator = true
             }
         }
@@ -4266,7 +4266,7 @@ struct AddTransactionView: View {
             if character.isNumber {
                 result.append(character)
             } else if (character == "," || character == ".") && !hasSeparator {
-                result.append(character)
+                result.append(".")
                 hasSeparator = true
             }
         }

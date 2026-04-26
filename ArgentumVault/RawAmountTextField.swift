@@ -10,7 +10,7 @@ struct RawAmountTextField: UIViewRepresentable {
     var accessibilityIdentifier: String?
     var accessibilityLabel: String?
     var runtimeMarker: String?
-    var sanitizeInput: (String) -> String = SecurityValidation.boundedAmountInput
+    var sanitizeInput: (String) -> String = SecurityValidation.boundedAmountEditingInput
     var font: UIFont?
     var isFocused: FocusState<Bool>.Binding?
 
@@ -320,7 +320,7 @@ struct RawAmountTextField: View {
     var accessibilityIdentifier: String?
     var accessibilityLabel: String?
     var runtimeMarker: String?
-    var sanitizeInput: (String) -> String = SecurityValidation.boundedAmountInput
+    var sanitizeInput: (String) -> String = SecurityValidation.boundedAmountEditingInput
     var font: Any?
     var isFocused: FocusState<Bool>.Binding?
 
