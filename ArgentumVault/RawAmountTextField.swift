@@ -132,10 +132,17 @@ struct RawAmountTextField: UIViewRepresentable {
                 return false
             }
 
-            let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: string)
+            // Normalize locale decimal separator (e.g. "," on Russian locale) to "."
+            // so the keyboard's decimal key always produces a dot in the amount field.
+            let localDecSep = Locale.autoupdatingCurrent.decimalSeparator ?? ""
+            let normalizedString = (!localDecSep.isEmpty && localDecSep != ".")
+                ? string.replacingOccurrences(of: localDecSep, with: ".")
+                : string
+
+            let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: normalizedString)
             let boundedText = parent.sanitizeInput(proposedRaw)
             let desiredCaretOffset = min(
-                range.location + (string as NSString).length,
+                range.location + (normalizedString as NSString).length,
                 (boundedText as NSString).length
             )
 
