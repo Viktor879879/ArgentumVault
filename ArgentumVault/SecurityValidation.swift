@@ -125,6 +125,16 @@ enum SecurityValidation {
         return String(String.UnicodeScalarView(filteredScalars))
     }
 
+    nonisolated static func boundedAmountEditingInput(_ raw: String) -> String {
+        let bounded = boundedAmountInput(raw)
+        // Normalize the first comma to a dot so the decimal separator is
+        // always displayed and parsed as ".". Multiple commas (thousands
+        // grouping) are left as-is for the expression evaluator.
+        let commas = bounded.filter { $0 == "," }.count
+        guard commas == 1 else { return bounded }
+        return bounded.replacingOccurrences(of: ",", with: ".")
+    }
+
     nonisolated static func isAllowedAmountInput(_ raw: String) -> Bool {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count <= maxAmountInputLength else {
