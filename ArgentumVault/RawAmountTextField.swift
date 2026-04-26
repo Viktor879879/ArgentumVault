@@ -185,6 +185,15 @@ struct RawAmountTextField: UIViewRepresentable {
             MoneyInputTrace.log(
                 "field=\(parent.traceID) editing_changed ui_text=\(liveText) binding_text=\(parent.text)"
             )
+            // Catch characters that bypass shouldChangeCharactersIn (e.g. the locale
+            // decimal-separator key on some keyboards which calls insertText directly).
+            guard !isApplyingChange else { return }
+            let bounded = parent.sanitizeInput(liveText)
+            if bounded != liveText {
+                apply(text: bounded, to: textField, desiredCaretOffset: (bounded as NSString).length)
+            } else if parent.text != liveText {
+                parent.text = liveText
+            }
         }
 
         private func apply(text newText: String, to textField: UITextField, desiredCaretOffset: Int) {
