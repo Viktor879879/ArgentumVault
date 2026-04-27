@@ -132,12 +132,16 @@ struct RawAmountTextField: UIViewRepresentable {
                 return false
             }
 
-            // Normalize locale decimal separator (e.g. "," on Russian locale) to "."
-            // so the keyboard's decimal key always produces a dot in the amount field.
+            // Log Unicode scalars to diagnose unknown decimal-separator characters from the keyboard.
+            let scalarDesc = string.unicodeScalars.map { "U+\(String($0.value, radix: 16, uppercase: true))" }.joined(separator: " ")
+            MoneyInputTrace.log("field=\(parent.traceID) char_scalars scalars=[\(scalarDesc)]")
+
+            // Normalize any decimal-separator character to "." so all locales and keyboard
+            // variants always produce a dot in the amount field.
             let localDecSep = Locale.autoupdatingCurrent.decimalSeparator ?? ""
-            let normalizedString = (!localDecSep.isEmpty && localDecSep != ".")
-                ? string.replacingOccurrences(of: localDecSep, with: ".")
-                : string
+            let isDecimalSep = string == ","
+                || (!localDecSep.isEmpty && localDecSep != "." && string == localDecSep)
+            let normalizedString = isDecimalSep ? "." : string
 
             let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: normalizedString)
             let boundedText = parent.sanitizeInput(proposedRaw)
