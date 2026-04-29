@@ -132,12 +132,8 @@ struct RawAmountTextField: UIViewRepresentable {
                 return false
             }
 
-            // Log Unicode scalars to diagnose unknown decimal-separator characters from the keyboard.
             let scalarDesc = string.unicodeScalars.map { "U+\(String($0.value, radix: 16, uppercase: true))" }.joined(separator: " ")
             MoneyInputTrace.log("field=\(parent.traceID) char_scalars scalars=[\(scalarDesc)]")
-
-            // Normalize any decimal-separator character to "." so all locales and keyboard
-            // variants always produce a dot in the amount field.
             let localDecSep = Locale.autoupdatingCurrent.decimalSeparator ?? ""
             let isDecimalSep = string == ","
                 || (!localDecSep.isEmpty && localDecSep != "." && string == localDecSep)
@@ -189,8 +185,6 @@ struct RawAmountTextField: UIViewRepresentable {
             MoneyInputTrace.log(
                 "field=\(parent.traceID) editing_changed ui_text=\(liveText) binding_text=\(parent.text)"
             )
-            // Catch characters that bypass shouldChangeCharactersIn (e.g. the locale
-            // decimal-separator key on some keyboards which calls insertText directly).
             guard !isApplyingChange else { return }
             let bounded = parent.sanitizeInput(liveText)
             if bounded != liveText {

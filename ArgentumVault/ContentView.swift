@@ -4124,9 +4124,9 @@ struct AddTransactionView: View {
 
     @ViewBuilder
     private var newTransactionAmountDebugView: some View {
-        Text("RAW: \(amountText)")
-            .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
+        Text("► RAW: \(amountText)")
+            .font(.caption.monospaced().bold())
+            .foregroundStyle(.orange)
 
         if !newTransactionSaveRawText.isEmpty || !newTransactionSaveNormalizedText.isEmpty || !newTransactionSaveDecimalText.isEmpty {
             Text("SAVE_RAW=\(newTransactionSaveRawText)")
