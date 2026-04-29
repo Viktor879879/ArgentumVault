@@ -2751,8 +2751,10 @@ enum DecimalFormatter {
     }
     
     static func editingString(from value: Decimal, maximumFractionDigits: Int = 6) -> String {
+        // Always use "." as decimal separator in editing fields so the stored
+        // string is locale-neutral and parses correctly on save.
         let formatter = formatter(
-            locale: appNumberLocale(),
+            locale: posixLocale,
             usesGroupingSeparator: false,
             minimumFractionDigits: 0,
             maximumFractionDigits: maximumFractionDigits
@@ -4149,6 +4151,9 @@ struct AddTransactionView: View {
                 sanitizeInput: sanitizeNewTransactionAmountEditing
             )
 
+            Text("► RAW: \(amountText)")
+                .font(.caption.monospaced().bold())
+                .foregroundStyle(.orange)
             newTransactionAmountDebugView
 
             if let calculatedAmountResult {
@@ -4264,7 +4269,8 @@ struct AddTransactionView: View {
             if character.isNumber {
                 result.append(character)
             } else if !hasSeparator && !character.isWhitespace {
-                // Any non-digit, non-whitespace character is treated as the decimal separator.
+                // Any non-digit, non-whitespace character is treated as the decimal separator,
+                // regardless of locale or Unicode variant sent by the keyboard.
                 result.append(".")
                 hasSeparator = true
             }

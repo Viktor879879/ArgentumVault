@@ -134,7 +134,6 @@ struct RawAmountTextField: UIViewRepresentable {
 
             let scalarDesc = string.unicodeScalars.map { "U+\(String($0.value, radix: 16, uppercase: true))" }.joined(separator: " ")
             MoneyInputTrace.log("field=\(parent.traceID) char_scalars scalars=[\(scalarDesc)]")
-
             let localDecSep = Locale.autoupdatingCurrent.decimalSeparator ?? ""
             let isDecimalSep = string == ","
                 || (!localDecSep.isEmpty && localDecSep != "." && string == localDecSep)

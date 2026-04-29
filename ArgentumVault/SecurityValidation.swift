@@ -126,10 +126,17 @@ enum SecurityValidation {
     }
 
     nonisolated static func boundedAmountEditingInput(_ raw: String) -> String {
-        let bounded = boundedAmountInput(raw)
-        // Normalize the first comma to a dot so the decimal separator is
-        // always displayed and parsed as ".". Multiple commas (thousands
-        // grouping) are left as-is for the expression evaluator.
+        // Pre-normalize the locale decimal separator to "." so it isn't
+        // dropped by the character-set filter in boundedAmountInput.
+        let localDecSep = Locale.autoupdatingCurrent.decimalSeparator ?? ""
+        let preNormalized: String
+        if !localDecSep.isEmpty && localDecSep != "." {
+            preNormalized = raw.replacingOccurrences(of: localDecSep, with: ".")
+        } else {
+            preNormalized = raw
+        }
+        let bounded = boundedAmountInput(preNormalized)
+        // Also normalize a lone ASCII comma to "." (decimal separator, not thousands grouping).
         let commas = bounded.filter { $0 == "," }.count
         guard commas == 1 else { return bounded }
         return bounded.replacingOccurrences(of: ",", with: ".")
