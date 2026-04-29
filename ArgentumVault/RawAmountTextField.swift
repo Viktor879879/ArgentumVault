@@ -132,10 +132,18 @@ struct RawAmountTextField: UIViewRepresentable {
                 return false
             }
 
-            let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: string)
+            let scalarDesc = string.unicodeScalars.map { "U+\(String($0.value, radix: 16, uppercase: true))" }.joined(separator: " ")
+            MoneyInputTrace.log("field=\(parent.traceID) char_scalars scalars=[\(scalarDesc)]")
+
+            let localDecSep = Locale.autoupdatingCurrent.decimalSeparator ?? ""
+            let isDecimalSep = string == ","
+                || (!localDecSep.isEmpty && localDecSep != "." && string == localDecSep)
+            let normalizedString = isDecimalSep ? "." : string
+
+            let proposedRaw = currentText.replacingCharacters(in: swiftRange, with: normalizedString)
             let boundedText = parent.sanitizeInput(proposedRaw)
             let desiredCaretOffset = min(
-                range.location + (string as NSString).length,
+                range.location + (normalizedString as NSString).length,
                 (boundedText as NSString).length
             )
 
@@ -178,6 +186,13 @@ struct RawAmountTextField: UIViewRepresentable {
             MoneyInputTrace.log(
                 "field=\(parent.traceID) editing_changed ui_text=\(liveText) binding_text=\(parent.text)"
             )
+            guard !isApplyingChange else { return }
+            let bounded = parent.sanitizeInput(liveText)
+            if bounded != liveText {
+                apply(text: bounded, to: textField, desiredCaretOffset: (bounded as NSString).length)
+            } else if parent.text != liveText {
+                parent.text = liveText
+            }
         }
 
         private func apply(text newText: String, to textField: UITextField, desiredCaretOffset: Int) {

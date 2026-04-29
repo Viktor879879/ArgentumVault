@@ -4122,9 +4122,9 @@ struct AddTransactionView: View {
 
     @ViewBuilder
     private var newTransactionAmountDebugView: some View {
-        Text("RAW: \(amountText)")
-            .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
+        Text("► RAW: \(amountText)")
+            .font(.caption.monospaced().bold())
+            .foregroundStyle(.orange)
 
         if !newTransactionSaveRawText.isEmpty || !newTransactionSaveNormalizedText.isEmpty || !newTransactionSaveDecimalText.isEmpty {
             Text("SAVE_RAW=\(newTransactionSaveRawText)")
@@ -4258,19 +4258,17 @@ struct AddTransactionView: View {
     }
 
     private func sanitizeNewTransactionAmountEditing(_ input: String) -> String {
-        let normalized = NewTransactionAmountInput.normalizeDecimalSeparators(in: input)
         var result = ""
         var hasSeparator = false
-
-        for character in normalized.prefix(SecurityValidation.maxAmountInputLength) {
+        for character in input.prefix(SecurityValidation.maxAmountInputLength) {
             if character.isNumber {
                 result.append(character)
-            } else if (character == "," || character == ".") && !hasSeparator {
+            } else if !hasSeparator && !character.isWhitespace {
+                // Any non-digit, non-whitespace character is treated as the decimal separator.
                 result.append(".")
                 hasSeparator = true
             }
         }
-
         return result
     }
 
